@@ -273,6 +273,12 @@ gh attestation verify game_information_counter.dll --repo H0oxy/game-information
 Шаблон обращения к вендорам, если файл заблокировали, -
 [docs/av-false-positive.md](docs/av-false-positive.md).
 
+## Приватность
+
+Мод работает целиком на твоей машине: телеметрии, аналитики и проверки
+обновлений в нём нет. Наружу он ходит только в Twitch и только когда
+интеграцию включили. Подробно - [docs/privacy.md](docs/privacy.md).
+
 ## Лицензия
 
 MIT, см. [LICENSE](LICENSE). Вендоренный крейт в `vendor/fromsoftware-rs` -
