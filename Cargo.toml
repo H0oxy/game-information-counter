@@ -12,7 +12,7 @@ exclude = ["vendor"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-hudhook = "0.9.2"
+hudhook = { version = "0.9.2", default-features = false, features = ["dx12"] }
 # Только для блокировки игрового ввода, пока открыто окно настроек (src/input.rs).
 retour = "0.3"
 # Локальная копия rev 1c90d365 (тот же пин, что был) с двумя правками: таблица

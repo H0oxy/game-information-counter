@@ -44,9 +44,21 @@ that likely triggers the heuristic is all legitimate and documented:
 - DPAPI (CryptProtectData) - encrypts the user's own Twitch OAuth token at
   rest so it is not stored in plain text.
 
-The file contains no process injection into foreign processes, no
-anti-debugging or anti-VM, no packer or obfuscation, and no persistence
-mechanism. Sources: https://github.com/H0oxy/game-information-counter
+The file contains no process injection into foreign processes (no
+OpenProcess / WriteProcessMemory / CreateRemoteThread in its import table), no
+packer or obfuscation, and no persistence mechanism.
+
+Two import groups look suspicious but come from libraries, not from mod logic,
+and I would rather point them out than have you find them:
+
+- CreateToolhelp32Snapshot, Thread32First/Next, OpenThread, SuspendThread,
+  ResumeThread, GetThreadContext/SetThreadContext, VirtualProtect - these are
+  the MinHook hooking library used by hudhook to install the DirectX 12
+  present hook that draws the overlay. They enumerate and briefly freeze
+  threads of the mod's own process while patching, which is standard for any
+  in-process overlay (Steam, Discord and RivaTuner do the same);
+- IsDebuggerPresent - imported by the MSVC C runtime, not called by the mod.
+  There is no anti-debugging or anti-VM logic in the source. Sources: https://github.com/H0oxy/game-information-counter
 
 Please whitelist. Thank you.
 ---
