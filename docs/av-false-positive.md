@@ -3,13 +3,15 @@
 Пять форм, потому что независимых движков пять, а не семь:
 Avast=AVG, Avira=WithSecure.
 
-| Вендор | Форма |
-|---|---|
-| Microsoft | https://microsoft.com/wdsi/filesubmission (выбрать "Software developer") |
-| Avast / AVG | https://www.avast.com/false-positive-file-form.php |
-| Avira / WithSecure | https://www.avira.com/en/analysis/submit |
-| AhnLab | https://global.ahnlab.com → Support → False positive |
-| Cynet | через support-форму на cynet.com |
+| Вендор | Вердикт (VT, 2026-09-03) | Форма |
+|---|---|---|
+| Microsoft | `Trojan:Win32/Wacatac.B!ml` | https://microsoft.com/wdsi/filesubmission (выбрать "Software developer") |
+| Avast / AVG | `Win64:MalwareX-gen [Misc]` | https://www.avast.com/false-positive-file-form.php |
+| Avira / WithSecure | `TR/W64.Agent` / `Trojan.TR/W64.Agent` | https://www.avira.com/en/analysis/submit |
+| AhnLab | `Trojan/Win.Generic.C5936529` | https://global.ahnlab.com → Support → False positive |
+| Cynet | `Malicious (score: 99)` | через support-форму на cynet.com |
+
+Вердикт из второй колонки подставляется в письмо вместо `<вердикт>`.
 
 Текст обращения (английский, один на всех):
 
