@@ -1,7 +1,4 @@
-# Game Information Counter
-
-Бывшее название — Interactive Overlay Statistics. Файлы мода (`.dll`, `.ini` и
-прочие) называются `game_information_counter.*`.
+[# Game Information Counter](https://www.nexusmods.com/eldenring/mods/10658)
 
 HUD статистики Elden Ring для стримов: боссы X/Y, смерти, уровень, руны, время
 игры, NG+, а в бою с боссом — счётчик смертей на нём и секундомер боя. Ещё
