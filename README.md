@@ -1,4 +1,4 @@
-[# Game Information Counter](https://www.nexusmods.com/eldenring/mods/10658)
+# [Game Information Counter](https://www.nexusmods.com/eldenring/mods/10658)
 
 HUD статистики Elden Ring для стримов: боссы X/Y, смерти, уровень, руны, время
 игры, NG+, а в бою с боссом — счётчик смертей на нём и секундомер боя. Ещё
@@ -267,7 +267,7 @@ cargo build --release
 DLL из релиза можно сверить с этим репозиторием:
 
 ```
-gh attestation verify game_information_counter.dll --repo <owner>/game-information-counter
+gh attestation verify game_information_counter.dll --repo H0oxy/game-information-counter
 ```
 
 Шаблон обращения к вендорам, если файл заблокировали, -

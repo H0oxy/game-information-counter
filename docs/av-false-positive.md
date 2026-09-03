@@ -39,7 +39,7 @@ that likely triggers the heuristic is all legitimate and documented:
 
 The file contains no process injection into foreign processes, no
 anti-debugging or anti-VM, no packer or obfuscation, and no persistence
-mechanism. Sources: <ссылка на репозиторий>
+mechanism. Sources: https://github.com/H0oxy/game-information-counter
 
 Please whitelist. Thank you.
 ---
