@@ -1,15 +1,20 @@
 # False positive reports
 
-Пять форм, потому что независимых движков пять, а не семь:
-Avast=AVG, Avira=WithSecure.
+Пять адресов, потому что независимых движков пять, а не семь:
+Avast=AVG, Avira=WithSecure. AhnLab и Cynet своей формы для файла не
+держат вовсе - шлём письмом.
 
-| Вендор | Вердикт (VT, 2026-09-03) | Форма |
+| Вендор | Вердикт (VT, 2026-09-03) | Куда |
 |---|---|---|
-| Microsoft | `Trojan:Win32/Wacatac.B!ml` | https://microsoft.com/wdsi/filesubmission (выбрать "Software developer") |
-| Avast / AVG | `Win64:MalwareX-gen [Misc]` | https://www.avast.com/false-positive-file-form.php |
-| Avira / WithSecure | `TR/W64.Agent` / `Trojan.TR/W64.Agent` | https://www.avira.com/en/analysis/submit |
-| AhnLab | `Trojan/Win.Generic.C5936529` | https://global.ahnlab.com → Support → False positive |
-| Cynet | `Malicious (score: 99)` | через support-форму на cynet.com |
+| Microsoft | `Trojan:Win32/Wacatac.B!ml` | https://www.microsoft.com/en-us/wdsi/filesubmission - Submission type "Software developer", файл + текст ниже |
+| Avast / AVG | `Win64:MalwareX-gen [Misc]` | https://www.avast.com/report-false-positive - файл + текст ниже |
+| Avira / WithSecure | `TR/W64.Agent` / `Trojan.TR/W64.Agent` | https://www.avira.com/en/analysis/submit - файл, тип "False Positive" |
+| AhnLab | `Trojan/Win.Generic.C5936529` | письмо на `v3sos@ahnlab.com`, тема "False positive report", файл в ZIP (их требование) |
+| Cynet | `Malicious (score: 99)` | https://www.cynet.com/contact-us/ , тема "False Positive Report" |
+
+Проверено вручную 2026-09-03: у AhnLab и Cynet формы для одиночного файла нет
+или не открывается напрямую - оба идут письмом/контакт-формой. Остальные три
+рабочие.
 
 Вердикт из второй колонки подставляется в письмо вместо `<вердикт>`.
 
