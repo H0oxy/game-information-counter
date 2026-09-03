@@ -1,0 +1,185 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Game Information Counter — варианты панели</title>
+<style>
+  /* Макет для выбора компоновки. В моде не используется — открывается
+     двойным кликом, данные фиктивные. Плотность компактная. */
+  :root {
+    --accent: #DEB870;
+    --label: #C2C2D1;
+    --value: #F2EBD6;
+    --plate: rgba(10, 10, 14, 0.34);
+    --border: rgba(222, 184, 112, 0.35);
+
+    --label-size: 12px;
+    --value-size: 17px;
+    --big-size: 22px;
+  }
+
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    color: var(--value);
+    text-shadow: 1px 1px 0 rgba(0,0,0,.85), 2px 2px 0 rgba(0,0,0,.5);
+    /* Приблизительно фон игры: тёмный камень с зеленью. */
+    background:
+      radial-gradient(120% 90% at 20% 10%, #4a4636 0%, #23241d 45%, #14150f 100%);
+    background-attachment: fixed;
+    padding: 28px;
+    box-sizing: border-box;
+  }
+  body.light {
+    background: radial-gradient(120% 90% at 20% 10%, #cfc7ab 0%, #8f8a72 60%, #6d6a55 100%);
+  }
+
+  .bar { margin-bottom: 22px; font-size: 14px; color: #ddd; text-shadow: none; }
+  button {
+    font: inherit; padding: 5px 12px; margin-right: 8px; cursor: pointer;
+    background: #2a2a22; color: #eee; border: 1px solid #555; border-radius: 5px;
+  }
+
+  .grid { display: flex; flex-wrap: wrap; gap: 34px; align-items: flex-start; }
+  .case { }
+  .tag {
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 9px; text-shadow: none;
+  }
+  .note { font-size: 12px; color: #b9b4a2; margin-top: 8px; max-width: 300px; text-shadow: none; }
+
+  .plate {
+    background: var(--plate);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 2px 12px rgba(0,0,0,.5);
+    padding: 11px 14px 12px;
+    display: inline-block;
+  }
+  .plate + .plate { margin-top: 7px; }
+
+  .label {
+    font-size: var(--label-size);
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--label);
+  }
+  .val { font-size: var(--value-size); line-height: 1.05; }
+  .accent { color: var(--accent); }
+
+  /* полоска прогресса */
+  .track {
+    height: 5px; border-radius: 3px; overflow: hidden;
+    background: rgba(0,0,0,.55); border: 1px solid var(--border);
+  }
+  .fill {
+    height: 100%; border-radius: 3px;
+    background: linear-gradient(180deg, #F0D79B 0%, #DEB870 55%, #C79F58 100%);
+  }
+  .rule { height: 1px; background: linear-gradient(90deg, rgba(222,184,112,.45), transparent); margin: 9px 0; }
+  .rail { border-left: 3px solid var(--accent); padding-left: 9px; border-radius: 2px; }
+
+  /* ---- A: цифры крупно, подписи под ними, два столбца ---- */
+  .a { min-width: 226px; }
+  .a .head { display: flex; align-items: baseline; justify-content: space-between; }
+  .a .count { font-size: var(--big-size); color: var(--accent); line-height: 1; }
+  .a .count .of { font-size: var(--label-size); color: var(--label); }
+  .a .cells { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin: 11px 0 2px; }
+  .a .cell .n { font-size: var(--value-size); line-height: 1.05; }
+  .a .cell .k { font-size: var(--label-size); letter-spacing: .1em; text-transform: uppercase; color: var(--label); }
+  .a .boss { font-size: var(--label-size); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+
+  /* ---- B: горизонтальная лента ---- */
+  .b .strip { display: flex; align-items: center; gap: 16px; white-space: nowrap; }
+  .b .item { display: flex; align-items: baseline; gap: 6px; }
+  .b .item .k { font-size: var(--label-size); letter-spacing: .12em; text-transform: uppercase; color: var(--label); }
+  .b .item .n { font-size: var(--value-size); }
+  .b .track { width: 74px; }
+  .b .sep { width: 1px; height: 15px; background: rgba(222,184,112,.3); }
+
+  /* ---- D: как сейчас, вычищенная типографика ---- */
+  .d { min-width: 218px; }
+  .d .head { display: flex; align-items: baseline; justify-content: space-between; }
+  .d .head .n { font-size: var(--big-size); color: var(--accent); line-height: 1; }
+  .d .head .n .of { font-size: var(--label-size); color: var(--label); }
+  .d .r { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; margin-top: 5px; }
+  /* Числа моноширинные и выровнены по правому краю — колонка перестаёт "дышать". */
+  .d .r .n { font-variant-numeric: tabular-nums; font-size: var(--value-size); }
+  .d .boss { font-size: var(--label-size); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+</style>
+
+<div class="bar">
+  <button onclick="document.body.classList.toggle('light')">Светлый фон</button>
+  <button onclick="document.documentElement.style.setProperty('--plate','rgba(10,10,14,.75)')">Плита плотнее</button>
+  <button onclick="document.documentElement.style.setProperty('--plate','rgba(10,10,14,.34)')">Плита как сейчас</button>
+  <span style="margin-left:10px;color:#aaa">макет: A по умолчанию, выбор в настройках игры (F7)</span>
+</div>
+
+<div class="grid">
+
+  <div class="case">
+    <div class="tag">A — цифры крупно, подписи под ними</div>
+    <div class="plate a">
+      <div class="head">
+        <span class="label">Боссы</span>
+        <span class="count">18<span class="of">/235</span></span>
+      </div>
+      <div class="track" style="margin-top:7px"><div class="fill" style="width:7.7%"></div></div>
+      <div class="cells">
+        <div class="cell"><div class="n">73</div><div class="k">смерти</div></div>
+        <div class="cell"><div class="n">45</div><div class="k">уровень</div></div>
+        <div class="cell"><div class="n">2 023</div><div class="k">руны</div></div>
+        <div class="cell"><div class="n">8:54:13</div><div class="k">время</div></div>
+      </div>
+      <div class="rule"></div>
+      <div class="boss">Бормотунчик Тибия</div>
+      <div class="rail" style="margin-top:6px"><span class="val">Попытка 4 · 0:23</span></div>
+    </div>
+    <div class="note">Значение главное, подпись служебная. Два столбца укорачивают панель вдвое против списка.</div>
+  </div>
+
+  <div class="case">
+    <div class="tag">B — горизонтальная лента</div>
+    <div class="plate b">
+      <div class="strip">
+        <div class="item"><span class="n accent">18<span class="k">/235</span></span></div>
+        <div class="track"><div class="fill" style="width:7.7%"></div></div>
+        <div class="sep"></div>
+        <div class="item"><span class="k">смерти</span><span class="n">73</span></div>
+        <div class="sep"></div>
+        <div class="item"><span class="k">ур.</span><span class="n">45</span></div>
+        <div class="sep"></div>
+        <div class="item"><span class="k">руны</span><span class="n">2 023</span></div>
+        <div class="sep"></div>
+        <div class="item"><span class="n">8:54:13</span></div>
+      </div>
+    </div>
+    <div class="plate b">
+      <div class="strip">
+        <div class="item"><span class="k accent">Бормотунчик Тибия</span></div>
+        <div class="sep"></div>
+        <div class="item"><span class="k">попытка</span><span class="n accent">4</span></div>
+        <div class="item"><span class="n">0:23</span></div>
+      </div>
+    </div>
+    <div class="note">Не отъедает высоту, кладётся вверх или вниз экрана. Вторая плита появляется только в бою.</div>
+  </div>
+
+  <div class="case">
+    <div class="tag">D — как сейчас, вычищенная типографика</div>
+    <div class="plate d">
+      <div class="head">
+        <span class="label">Боссы</span>
+        <span class="n">18<span class="of">/235</span></span>
+      </div>
+      <div class="track" style="margin:7px 0 10px"><div class="fill" style="width:7.7%"></div></div>
+      <div class="r"><span class="label">Смерти</span><span class="n">73</span></div>
+      <div class="r"><span class="label">Уровень</span><span class="n">45</span></div>
+      <div class="r"><span class="label">Руны</span><span class="n">2 023</span></div>
+      <div class="r"><span class="label">Время</span><span class="n">8:54:13</span></div>
+      <div class="rule"></div>
+      <div class="boss">Бормотунчик Тибия</div>
+      <div class="rail" style="margin-top:6px"><span class="val">Попытка 4 · 0:23</span></div>
+    </div>
+    <div class="note">Компоновка та же, но числа моноширинные и выровнены, подписи тише, интерлиньяж ровный.</div>
+  </div>
+
+</div>

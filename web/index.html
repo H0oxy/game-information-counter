@@ -1,0 +1,575 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Game Information Counter</title>
+<style>
+  /* Прозрачный фон - OBS Browser Source покажет только плиты. */
+  html, body { margin: 0; background: transparent; }
+
+  /* Кегли, цвета и прозрачность приезжают из .ini вместе с данными
+     (поле `style` в JSON). Держать их здесь своими значениями нельзя: тогда
+     оверлей и OBS расходятся по размеру и цвету, что и было живьём. */
+  :root {
+    --label-size: 12px;
+    --value-size: 17px;
+    --counter-size: 22px;
+    --boss-size: 13px;
+    --attempt-size: 15px;
+    /* Карточка покупки: свой источник в OBS, поэтому и размер свой. */
+    --toast-label-size: 14px;
+    --toast-value-size: 15px;
+    --toast-width: 230px;
+    --toast-plate: rgba(10, 10, 14, 0.65);
+    --toast-border: rgba(222, 184, 112, 0.85);
+    --toast-radius: 8px;
+    --toast-border-w: 1.6px;
+    /* Разрядка подписей и зазор между строками - настройки, не отделка
+       страницы: в игре то же самое рисует `text_tracked` и `line_gap`. */
+    --tracking: 1.6px;
+    --row-gap: 5px;
+    --accent: #DEB870;
+    --label: #C2C2D1;
+    --value: #F2EBD6;
+    --plate: rgba(10, 10, 14, 0.34);
+    --border: rgba(222, 184, 112, 0.85);
+    --radius: 8px;
+    --border-w: 1.6px;
+    /* Линейки приглушены: золото оставлено счётчику и заливке полоски. */
+    --rule: rgba(194, 194, 209, 0.3);
+  }
+
+  body {
+    font-family: "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    color: var(--value);
+    -webkit-font-smoothing: antialiased;
+    /* Оверлей рисует текст в две тёмные подложки со сдвигом - повторяем,
+       иначе в OBS буквы заметно тоньше. */
+    text-shadow: 1px 1px 0 rgba(0,0,0,.85), 2px 2px 0 rgba(0,0,0,.5);
+  }
+
+  #hud {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 12px;
+    opacity: 1;
+    /* Те же тайминги, что у затухания в игре (StreamHud::render): вниз
+       быстрее, чем вверх - на входе в меню резкий обрыв читается как баг,
+       на выходе мягкое проявление читается лучше щелчка. */
+    transition: opacity .45s ease;
+  }
+  #hud.hidden { opacity: 0; transition-duration: .18s; }
+
+  /* Корпус приезжает в `style.chassis` и повторяет `draw_panel_chrome` в
+     игре: frame - скоба сверху и снизу, без боковин; bare - вообще ничего;
+     bar - фон и акцентная полоса слева. Оба варианта заходят в углы
+     скруглением: браузер сам сводит border на нет там, где соседняя сторона
+     без него, - ровно то же, что `stroke_cap` рисует дугой в игре. */
+  .plate {
+    background: var(--plate);
+    border: none;
+    border-radius: var(--radius);
+    box-shadow: 0 2px 12px rgba(0,0,0,.5);
+    padding: 11px 14px 12px;
+  }
+  /* Плита меняет размер плавно - как панель в игре (`PANEL_RESIZE_SECS`),
+     иначе появившийся блок боя дёргает виджет скачком. Высоту `auto` CSS не
+     анимирует, поэтому размер ставит JS по замеру внутренней обёртки, а
+     `overflow: hidden` срезает то, что ещё не поместилось: содержимое
+     выезжает, а не мигает. */
+  #main {
+    overflow: hidden;
+    transition: width .16s ease, height .16s ease;
+  }
+  /* Обёртка держит СВОЙ, естественный размер - иначе замерять было бы нечего:
+     плита к этому моменту уже сжата до анимированного. */
+  #main > .fit { width: max-content; }
+  /* Первая отрисовка: размер берётся целиком, без роста из точки - за
+     появление отвечает затухание #hud, как и в игре. */
+  #main.instant { transition: none; }
+  .plate.frame {
+    border-top: var(--border-w) solid var(--border);
+    border-bottom: var(--border-w) solid var(--border);
+  }
+  .plate.bare { background: none; box-shadow: none; padding: 2px 4px; }
+  .plate.bar { border-left: var(--border-w) solid var(--border); }
+  .plate.bar_right { border-right: var(--border-w) solid var(--border); }
+  /* Карточка покупки носит СВОЙ корпус: свои цвета, радиус и толщина линии
+     (запрос 2026-08-23). Классы те же, но переменные другие - иначе её было
+     не отделить от виджета статистики, который висит другим источником. */
+  .toast.plate { background: var(--toast-plate); border-radius: var(--toast-radius); }
+  .toast.plate.frame {
+    border-top: var(--toast-border-w) solid var(--toast-border);
+    border-bottom: var(--toast-border-w) solid var(--toast-border);
+  }
+  .toast.plate.bar { border-left: var(--toast-border-w) solid var(--toast-border); border-top: none; border-bottom: none; }
+  .toast.plate.bar_right { border-right: var(--toast-border-w) solid var(--toast-border); border-top: none; border-bottom: none; }
+  .toast.plate.bare { background: none; box-shadow: none; border: none; }
+  .plate.gone { display: none; }
+
+  .label {
+    font-size: var(--label-size);
+    /* Palatino капслоком в 12-16px читается тонко без утяжеления - тот же
+       отзыв, что и для оверлея ("БОССЫ слишком тонкое", 2026-08-18). */
+    font-weight: 700;
+    letter-spacing: var(--tracking);
+    text-transform: uppercase;
+    color: var(--label);
+  }
+  .val { font-size: var(--value-size); line-height: 1.05; color: var(--value); }
+  /* Блок боя - те же строки, что и статистика, отличается только кегль
+     значений: `attempt_size` настраивается отдельным ползунком. Подписи
+     остаются общего размера, чтобы столбец слева не поехал.
+     Селекторы в три класса намеренно: при двух (`.fight .n`) специфичность
+     совпала бы с `.r .n`, и побеждала бы та строка, что ниже в файле. */
+  .fight .r .n,
+  .fight .cell .n,
+  .fight .strip .val { font-size: var(--attempt-size); }
+  .accent { color: var(--accent); }
+
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; }
+  .head .count { font-size: var(--counter-size); color: var(--accent); line-height: 1; }
+  .head .count .of { font-size: var(--label-size); color: var(--label); }
+
+  /* Жёлоб без золотой обводки, заливка плоская - ровно как рисует
+     `draw_progress` после правки минимализма. */
+  .track {
+    height: 5px; border-radius: 3px; overflow: hidden;
+    background: rgba(0,0,0,.55);
+  }
+  .fill {
+    height: 100%; border-radius: 3px;
+    background: var(--accent);
+    transition: width .3s ease;
+  }
+  /* Ровная волосяная линейка во всю ширину, как под заголовком плитки в
+     настройках: гаснущий вправо градиент был отделкой ради отделки. */
+  .rule { height: 1px; margin: 7px 0; background: var(--rule); }
+
+  .boss {
+    font-size: var(--boss-size);
+    font-weight: 700;
+    letter-spacing: var(--tracking);
+    text-transform: uppercase;
+    color: var(--accent);
+    /* Обрезки нет: имя босса резалось троеточием даже там, где место было
+       (жалоба 2026-08-21). Плита теперь и так меняет ширину замером, а длинное
+       имя - ровно то, ради чего эта строка существует. */
+    white-space: nowrap;
+  }
+
+  /* A: значения крупно, подписи мелко под ними, две колонки */
+  .cells { display: grid; grid-template-columns: 1fr 1fr; gap: var(--row-gap) 16px; margin-top: 11px; }
+  .cell .n { font-size: var(--value-size); line-height: 1.05; }
+  .cell .k { font-size: var(--label-size); letter-spacing: var(--tracking); text-transform: uppercase; color: var(--label); }
+
+  /* B: горизонтальная лента */
+  .strip { display: flex; align-items: center; gap: 16px; white-space: nowrap; }
+  .strip .pair { display: flex; align-items: baseline; gap: 5px; }
+  .strip .count { font-size: var(--counter-size); color: var(--accent); line-height: 1; }
+  .strip .count .of { font-size: var(--label-size); color: var(--label); }
+  .sep { width: 1px; height: 15px; background: rgba(222,184,112,.3); }
+
+  /* D: список «подпись слева, значение справа» */
+  .r { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; margin-top: var(--row-gap); }
+  /* Моноширинные цифры: колонка значений перестаёт «дышать» при каждом тике. */
+  .r .n { font-variant-numeric: tabular-nums; font-size: var(--value-size); }
+
+  /* Карточки покупок. Живут ВНЕ #hud намеренно: панель прячется в меню и
+     катсцене, а за покупку зритель заплатил - её видно всегда. Ровно то же
+     правило, что и в оверлее (draw_purchase_toasts зовётся после draw). */
+  #toasts {
+    position: fixed; top: 12px; right: 12px;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 7px;
+  }
+  /* Отдельным источником в OBS карточки живут сами по себе: прижимать их к
+     правому краю окна незачем, источник двигают мышью целиком. */
+  body.only-toasts #toasts { position: static; align-items: flex-start; }
+  body.only-toasts #hud { display: none; }
+  body.only-hud #toasts { display: none; }
+  /* Карточка держит форму, а не тянется за текстом: раньше она была лентой
+     во всю длину названия и читалась строкой лога, а не событием. Ширина
+     фиксированная, элементы разнесены по углам - ровно как в оверлее
+     (draw_purchase_toasts), чтобы два вывода выглядели одним продуктом. */
+  /* Появление и затухание считает JS по возрасту события - ровно как в игре
+     (`draw_purchase_toasts`). CSS-анимацией это делать нельзя: DOM карточек
+     пересобирается при каждой новой покупке, и анимация проигрывалась бы
+     заново у всех, включая давно висящие. */
+  /* Размеры адаптивные: отступы и зазор считаются от кегля самой карточки,
+     как в игре (`em` в `draw_purchase_toasts`). Крупный текст иначе упирался
+     в края, а мелкий тонул в пустоте. */
+  .toast {
+    max-width: var(--toast-width); box-sizing: border-box;
+    display: flex; align-items: baseline; gap: .55em;
+    padding: .45em .75em;
+    font-size: var(--toast-value-size);
+    transition: opacity .2s ease, transform .2s ease;
+  }
+  .toast .who {
+    font-size: var(--toast-label-size); color: var(--label); font-weight: 700;
+    letter-spacing: var(--tracking); text-transform: uppercase; white-space: nowrap;
+  }
+  .toast .what {
+    font-size: var(--toast-value-size); color: var(--value);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* Справа одно число: отсчёт до появления врага, а после - цена. */
+  .toast .cost {
+    margin-left: auto; font-size: var(--toast-label-size); color: var(--accent);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+</style>
+
+<div id="toasts"></div>
+<div id="hud" class="hidden">
+  <div class="plate" id="main"></div>
+</div>
+
+<script>
+// Одна страница на два источника OBS. Путь решает, что показывать:
+//   /hud     - только статистика
+//   /toasts  - только карточки покупок
+// Режима «всё вместе» нет: в OBS это отдельные источники, которые двигают
+// мышью независимо друг от друга.
+const mode = location.pathname.replace(/\/+$/, '');
+if (mode === '/hud') document.body.classList.add('only-hud');
+if (mode === '/toasts') document.body.classList.add('only-toasts');
+
+const hud = document.getElementById('hud');
+const mainEl = document.getElementById('main');
+// Двойной босс приезжает двумя именами, разделёнными переводом строки
+// (`Snapshot::boss_name`). Константой, а не литералом в двух местах.
+const BOSS_SEP = String.fromCharCode(10);
+const toastsEl = document.getElementById('toasts');
+/* Корпус, приехавший в `style.chassis`: его носят и панель, и карточки. */
+let chassis = 'frame';
+let toastChassis = 'frame';
+
+// Подписи приезжают в JSON готовыми, на языке, выбранном в моде: свой словарь
+// здесь был второй копией тех же строк и знал ровно два языка, а файлов локали
+// в папке locale может быть сколько угодно.
+// Пара читается как [полная подпись, короткая для ленты].
+let LANG = 'en';
+let TR = {};
+const tr = key => TR[key] || ['', ''];
+
+const hms = ms => {
+  const t = Math.floor(ms / 1000);
+  return `${Math.floor(t / 3600)}:${String(Math.floor(t / 60) % 60).padStart(2,'0')}:${String(t % 60).padStart(2,'0')}`;
+};
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2,'0')}`;
+// Группировка разрядов по языку виджета. Код приезжает из имени файла локали,
+// то есть может быть каким угодно - непонятный Intl отвергает исключением.
+const num = n => {
+  try { return n.toLocaleString(LANG).replace(/\u00A0/g, ' '); }
+  catch { return n.toLocaleString('en-US'); }
+};
+// Текст из игры (имя босса) никогда не вставляем как HTML.
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+
+// Стиль из .ini -> CSS-переменные. Один источник правды на оба вывода.
+// Кегли округляются до целого пикселя: дробный font-size у CEF (движок
+// Browser Source в OBS) рисуется чуть мягче/размытее целого - на глаз это
+// особенно заметно как раз при нестандартном `web_scale` (жалоба "картинка
+// размазанная при смене scale").
+const hexToRgb = hex => {
+  const h = hex.replace('#', '');
+  return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+};
+
+function applyStyle(st) {
+  if (!st) return;
+  const r = document.documentElement.style;
+  const k = st.scale || 1;
+  const px = n => `${Math.round(n * k)}px`;
+  r.setProperty('--label-size', px(st.label_size));
+  r.setProperty('--value-size', px(st.value_size));
+  r.setProperty('--counter-size', px(st.counter_size));
+  r.setProperty('--boss-size', px(st.boss_name_size));
+  r.setProperty('--attempt-size', px(st.attempt_size));
+  r.setProperty('--toast-label-size', px(st.toast_label_size));
+  r.setProperty('--toast-value-size', px(st.toast_value_size));
+  r.setProperty('--toast-width', px(st.toast_width));
+  // Разрядка и зазор строк - в пикселях, как в игре, и едут через тот же
+  // масштаб. В em они жили бы своей жизнью при каждой смене кегля.
+  r.setProperty('--tracking', `${((st.tracking || 0) * k).toFixed(2)}px`);
+  r.setProperty('--row-gap', px(st.line_gap));
+  r.setProperty('--accent', st.accent);
+  r.setProperty('--label', st.label_color);
+  r.setProperty('--value', st.value_color);
+  r.setProperty('--plate', `rgba(10, 10, 14, ${st.opacity})`);
+  // Раньше был фиксированный цвет в CSS, не связанный ни с акцентом, ни с
+  // настройкой - окантовку было не поднять из настроек (жалоба 2026-08-18:
+  // "почти не видна"). Теперь цвет акцента со своей прозрачностью.
+  const [br, bg, bb] = hexToRgb(st.accent);
+  r.setProperty('--border', `rgba(${br}, ${bg}, ${bb}, ${st.border_opacity})`);
+  const [lr, lg, lb] = hexToRgb(st.label_color);
+  r.setProperty('--rule', `rgba(${lr}, ${lg}, ${lb}, 0.3)`);
+  // Корпус - класс на плите: та же тройка, что у панели в игре.
+  // Радиус и толщина линии - настройки, как и всё остальное в `style`. Едут
+  // через `web_scale` вместе с кеглями: плита растёт, и форма обязана расти
+  // вместе с ней.
+  r.setProperty('--radius', `${Math.max(0, (st.rounding || 0) * (st.scale || 1)).toFixed(1)}px`);
+  r.setProperty('--border-w', `${Math.max(1, (st.border_width || 0) * (st.scale || 1)).toFixed(1)}px`);
+  chassis = ['frame', 'bare', 'bar', 'bar_right'].includes(st.chassis) ? st.chassis : 'frame';
+  mainEl.className = `plate ${chassis}`;
+  // Корпус карточки покупки - свой набор тех же четырёх чисел.
+  r.setProperty('--toast-plate', `rgba(10, 10, 14, ${st.toast_opacity})`);
+  r.setProperty('--toast-border', `rgba(${br}, ${bg}, ${bb}, ${st.toast_border_opacity})`);
+  r.setProperty('--toast-radius', `${Math.max(0, (st.toast_rounding || 0) * (st.scale || 1)).toFixed(1)}px`);
+  r.setProperty('--toast-border-w', `${Math.max(1, (st.toast_border_width || 0) * (st.scale || 1)).toFixed(1)}px`);
+  toastChassis = ['frame', 'bare', 'bar', 'bar_right'].includes(st.toast_chassis) ? st.toast_chassis : 'frame';
+  // Список боссов носит тот же корпус, что и панель: это один продукт.
+}
+
+/* Те же метрики и в том же порядке, что и в оверлее (overlay.rs::content):
+   `short` идёт в ленту, где место дороже полноты подписи. */
+function items(d) {
+  const s = d.show, out = [];
+  const row = (key, value) => out.push([...tr(key), value]);
+  if (s.deaths)      row('deaths', d.deaths);
+  if (s.deaths_on_boss) row('deaths_on_boss', d.deaths_on_boss);
+  if (s.viewer_kills) row('viewer_kills', d.viewer_deaths);
+  if (s.level)       row('level', d.level);
+  if (s.runes)       row('runes', num(d.runes));
+  if (s.runes_total) row('runes_total', num(d.runes_total));
+  if (s.playtime)    row('playtime', hms(d.play_time_ms));
+  if (s.ng && d.ng > 0) row('ng', d.ng);
+  if (s.deathless)   row('deathless', mmss(d.deathless_secs));
+  if (s.map_explored) {
+    const pct = d.map_total > 0 ? (d.map_visited / d.map_total) * 100 : 0;
+    row('map', `${pct.toFixed(0)}%`);
+  }
+
+  // Комбинированные метрики - те же формулы, что в overlay.rs::content, но
+  // считаются здесь независимо из сырых полей: страница и оверлей не
+  // обмениваются готовым текстом, только данными.
+  const hours = d.play_time_ms / 3600000;
+  if (s.boss_kill_rate && hours > 0) row('boss_rate', (d.bosses_killed / hours).toFixed(1));
+  if (s.death_rate && hours > 0)     row('death_rate', (d.deaths / hours).toFixed(1));
+  if (s.avg_attempts && d.bosses_killed > 0) {
+    row('avg_attempts', (d.total_attempts / d.bosses_killed).toFixed(1));
+  }
+  return out;
+}
+
+function progress(d) {
+  if (!d.show.bosses) return null;
+  const pct = d.bosses_total > 0 ? (d.bosses_killed / d.bosses_total) * 100 : 0;
+  return { killed: d.bosses_killed, total: d.bosses_total, pct };
+}
+
+/* Строки боя - такие же метрики, как всё остальное (overlay.rs::content), и
+   рисуются теми же `rows`. Раньше это была одна свободная строка
+   «Попытка N · время», и рядом со «Смерти»/«Уровень» она читалась инородно
+   (жалоба 2026-08-20). Отличие ровно одно - кегль значения (--attempt-size),
+   его задаёт класс `.fight` на контейнере. */
+function fightItems(d) {
+  const out = [];
+  // Номер попытки минус первый заход: смертей на этом боссе, с нуля.
+  if (d.show.attempts)    out.push([...tr('attempt'), Math.max(0, d.attempts - 1)]);
+  if (d.show.fight_timer) out.push([...tr('fight_time'), mmss(d.attempt_secs)]);
+  return out;
+}
+
+const bar = p => `<div class="track"><div class="fill" style="width:${p.pct.toFixed(1)}%"></div></div>`;
+const headline = p =>
+  `<div class="head"><span class="label">${tr('bosses')[0]}</span>`
+  + `<span class="count">${p.killed}<span class="of">/${p.total}</span></span></div>`;
+
+/* Строки в стиле выбранной компоновки. Общая для метрик и для строк боя:
+   выводы обязаны выглядеть одним продуктом, а раньше блок боя рисовался своим
+   кодом и отличался от статистики (та же жалоба, что и в оверлее). */
+function rows(layout, list) {
+  if (!list.length) return '';
+  if (layout === 'a') {
+    return '<div class="cells">' + list.map(([k, , v]) =>
+      `<div class="cell"><div class="n">${v}</div><div class="k">${k}</div></div>`).join('') + '</div>';
+  }
+  if (layout === 'b') {
+    return list.map(([, short, v]) =>
+      `<div class="pair"><span class="label">${short}</span><span class="val">${v}</span></div>`)
+      .join('<div class="sep"></div>');
+  }
+  return list.map(([k, , v]) =>
+    `<div class="r"><span class="label">${k}</span><span class="n">${v}</span></div>`).join('');
+}
+
+// Ближайший босс: подпись - его имя, значение - метры. Стоит НАД счётчиком
+// убитых, а не среди метрик - это не «как дела», а «куда идти» (тот же порядок,
+// что в overlay.rs::draw_progress_head).
+function nearBoss(d) {
+  if (!d.show.nearest_boss || !d.near_boss) return '';
+  // Линейка едет вместе со строкой: она отделяет «куда идти» от «как дела», и
+  // без ближайшего босса отделять нечего. У заголовка секции своей линейки
+  // нет - две горизонтали подряд читались как рябь (то же в overlay.rs).
+  return `<div class="r"><span class="label">${d.near_boss}</span>` +
+    `<span class="n">${nearValue(d)}</span></div><div class="rule"></div>`;
+}
+
+// Высота отдельным числом со стрелкой - та же формула, что в
+// overlay.rs::height_mark. Порог в пару метров съедает шум: ступенька под
+// ногами не должна рисовать стрелку.
+function nearValue(d) {
+  const dy = Math.round(d.near_dy || 0);
+  const mark = Math.abs(dy) < 2 ? '' : ` ${Math.abs(dy)}${dy > 0 ? '↑' : '↓'}`;
+  return `${Math.round(d.near_dist)}м${mark}`;
+}
+
+function layoutA(d, p, list) {
+  let h = nearBoss(d);
+  if (p) {
+    h += headline(p);
+    if (d.show.boss_bar) h += `<div style="margin:7px 0">${bar(p)}</div>`;
+  }
+  return h + rows('a', list);
+}
+
+function layoutD(d, p, list) {
+  let h = nearBoss(d);
+  if (p) {
+    h += headline(p);
+    if (d.show.boss_bar) h += `<div style="margin:7px 0">${bar(p)}</div>`;
+  }
+  return h + rows('d', list);
+}
+
+// В ленте полоски нет: рядом с самой цифрой она ничего не добавляет, а место
+// в одну строку дорогое.
+function layoutB(d, p, list) {
+  const head = p ? `<span class="count">${p.killed}<span class="of">/${p.total}</span></span>` : '';
+  // В ленте всё в одну строку, поэтому ближайший идёт парой, как остальные.
+  const near = d.show.nearest_boss && d.near_boss
+    ? `<div class="pair"><span class="label">${d.near_boss}</span>` +
+      `<span class="val">${nearValue(d)}</span></div><div class="sep"></div>`
+    : '';
+  const body = near + rows('b', list);
+  const sep = head && body ? '<div class="sep"></div>' : '';
+  return `<div class="strip">${head}${sep}${body}</div>`;
+}
+
+// Ник зрителя и название награды - самый недоверенный текст на странице: их
+// пишет посторонний человек. Только esc(), никогда как HTML.
+let toastKey = '';
+function renderToasts(t) {
+  const evs = (t && t.events) || [];
+  // DOM пересобираем только когда изменился СОСТАВ. Иначе innerHTML
+  // переписывался бы каждые 250 мс и карточка мигала бы на каждом тике.
+  // Отсчёт до появления врага в ключ НЕ входит: он тикает каждую секунду, и
+  // из-за него карточки пересобирались бы (а с ними заново проигрывалось бы
+  // появление). Секунды обновляются текстом на месте, ниже.
+  const key = toastChassis + '~' + evs.map(e => `${e.viewer}|${e.label}|${e.cost}`).join('~');
+  if (key !== toastKey) {
+    toastKey = key;
+    toastsEl.innerHTML = evs.slice().reverse().map(e => {
+      return `<div class="plate toast ${toastChassis}">`
+        + `<div class="who">${esc(e.viewer)}</div>`
+        + `<div class="what">${esc(e.label)}</div>`
+        + `<div class="cost">${e.cost || ''}</div></div>`;
+    }).join('');
+  }
+  // Каждый тик, по возрасту события: проявление, затухание и отсчёт. Числа
+  // те же, что в игре - 0.22 с на появление, 0.4 с на затухание.
+  const fallbackLife = (t && t.life) || 6;
+  const kids = toastsEl.children;
+  for (let i = 0; i < kids.length; i++) {
+    const e = evs[evs.length - 1 - i];
+    if (!e) { kids[i].style.opacity = 0; continue; }
+    const appear = Math.min(1, e.age / 0.22);
+    const eased = 1 - Math.pow(1 - appear, 3);
+    // Своё время жизни у карточки важнее общего - см. `life` в JSON.
+    const life = e.life || fallbackLife;
+    const out = Math.max(0, Math.min(1, (life - e.age) / 0.4));
+    kids[i].style.opacity = out * eased;
+    kids[i].style.transform = `translateX(${((1 - eased) * 16).toFixed(1)}px)`;
+    // Пока враг не появился - справа отсчёт, дальше цена. Текстом на месте,
+    // а не пересборкой DOM: иначе карточки мигали бы каждую секунду.
+    // Нулевая цена - карточка о состоянии мода, а не о покупке (см. `cost`
+    // в `PurchaseEvent`): справа пусто, платить было некому.
+    const wait = Math.ceil(e.wait || 0);
+    kids[i].querySelector('.cost').textContent =
+      wait > 0 ? `${wait} ${tr('secs')[0]}` : (e.cost ? `${e.cost}` : '');
+  }
+}
+
+function render(d) {
+  // Язык - первым: подписи и разделитель тысяч зависят от него, а приезжает он
+  // тем же ответом, что и данные.
+  if (d.lang) LANG = d.lang;
+  if (d.tr) TR = d.tr;
+  // Стиль применяем ДО выхода по видимости: карточки покупок рисуются и при
+  // спрятанной панели, а кегли с цветами у них те же самые. Иначе игрок в
+  // меню - и карточка в OBS уезжает на дефолтные размеры из :root.
+  applyStyle(d.style);
+  // Карточки покупок рисуются до проверки видимости: панель прячется в меню,
+  // они - нет.
+  renderToasts(d.twitch);
+  if (!d.valid || d.hidden) { hud.classList.add('hidden'); return; }
+  hud.classList.remove('hidden');
+
+  const p = progress(d);
+  const list = items(d);
+  const build = { a: layoutA, b: layoutB, d: layoutD }[d.layout] || layoutA;
+
+  // Блок боя живёт в той же плите, отделённый линейкой. Отдельной плитой имя
+  // босса висело под всей информацией и выглядело инородно (отзыв 2026-08-18).
+  const fl = d.boss_name !== '' ? fightItems(d) : [];
+  // Двойной босс приезжает двумя именами через перевод строки; второе
+  // показываем только по галочке - как в игре.
+  let name = d.boss_name !== '' && d.show.boss_name ? d.boss_name : '';
+  if (name && !d.show.all_boss_names) name = name.split(BOSS_SEP)[0];
+
+  // Двойной босс приезжает двумя именами через перевод строки: в списке и в
+  // колонках каждое идёт своей строкой, в ленте - подряд, как в игре
+  // (`strip_name` в overlay.rs).
+  let fight = '';
+  if (name || fl.length) {
+    const body = rows(d.layout, fl);
+    fight = '<div class="rule"></div><div class="fight">';
+    fight += d.layout === 'b'
+      ? '<div class="strip">'
+        + (name ? `<span class="boss">${esc(name.split(BOSS_SEP).join(' · '))}</span>` : '')
+        + (name && body ? '<div class="sep"></div>' : '')
+        + body + '</div>'
+      : (name ? name.split(BOSS_SEP).map(n => `<div class="boss">${esc(n)}</div>`).join('') : '') + body;
+    fight += '</div>';
+  }
+
+  mainEl.innerHTML = `<div class="fit">${build(d, p, list) + fight}</div>`;
+  fitPlate();
+}
+
+// Размер плиты по замеру содержимого: явными пикселями, потому что `auto`
+// анимировать нечем.
+let plateSized = false;
+function fitPlate() {
+  const inner = mainEl.firstElementChild;
+  if (!inner) return;
+  // Плита скрыта (`.gone`) - замер вернёт нули, и на возврате она выросла бы
+  // из точки. Оставляем прежний размер до следующей отрисовки.
+  if (!inner.offsetWidth && !inner.offsetHeight) return;
+  if (!plateSized) {
+    // Первый кадр - без перехода, иначе виджет вырастал бы из нуля.
+    mainEl.classList.add('instant');
+  }
+  mainEl.style.width = `${inner.offsetWidth}px`;
+  mainEl.style.height = `${inner.offsetHeight}px`;
+  if (!plateSized) {
+    // Снимаем запрет на следующем кадре: сразу после записи размера браузер
+    // ещё не применил его, и переход отыграл бы от нуля.
+    plateSized = true;
+    requestAnimationFrame(() => mainEl.classList.remove('instant'));
+  }
+}
+
+async function tick() {
+  try {
+    render(await (await fetch('/data.json', { cache: 'no-store' })).json());
+  } catch {
+    // Игра закрыта или мод перезагружается - просто прячемся до следующего раза.
+    hud.classList.add('hidden');
+    renderToasts(null);
+  }
+}
+tick();
+setInterval(tick, 250);
+</script>

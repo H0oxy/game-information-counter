@@ -1,0 +1,42 @@
+[package]
+name = "game_information_counter"
+version = "0.1.0"
+edition = "2021"
+# Вендоренный крейт - отдельный воркспейс, в состав пакета не входит.
+exclude = ["vendor"]
+
+[lib]
+# rlib - чтобы examples/twitch_check.rs мог позвать те же самые функции, что
+# работают в игре. Диагностировать подключение изнутри игры нечем: там нет ни
+# консоли, ни лога.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hudhook = "0.9.2"
+# Только для блокировки игрового ввода, пока открыто окно настроек (src/input.rs).
+retour = "0.3"
+# Локальная копия rev 1c90d365 (тот же пин, что был) с двумя правками: таблица
+# RVA для игры 2.7.0.0 и `rva::try_get()` вместо паники - иначе незнакомая
+# версия игры закрывает её. Как обновлять - vendor/README.md.
+eldenring = { path = "vendor/fromsoftware-rs/crates/eldenring" }
+fromsoftware-shared = { path = "vendor/fromsoftware-rs/crates/shared" }
+# Разбор PE запущенной игры (src/spawn.rs). Крейт eldenring тянет его и так -
+# это прямая зависимость на то, что уже собирается.
+pelite = "0.10"
+tokio = { version = "1.53.1", default-features = false, features = ["rt", "net", "time", "macros", "sync", "io-util"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+
+[build-dependencies]
+# Ресурс версии в DLL: без имени, версии и описания файл выглядит подозрительно
+# для эвристик антивирусов сам по себе (см. build.rs). Своими силами это не
+# делается - нужен компилятор ресурсов, который крейт и находит.
+winresource = "0.1"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true

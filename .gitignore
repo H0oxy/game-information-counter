@@ -1,0 +1,18 @@
+/target
+/vendor/fromsoftware-rs/target
+/backup
+/img
+*.7z
+
+# Runtime files the mod writes next to the DLL. .twitch holds OAuth tokens.
+game_information_counter.ini
+game_information_counter.stats
+game_information_counter.twitch
+game_information_counter.rewards
+game_information_counter.bosses
+game_information_counter.spawncrash
+imgui.ini
+
+# Журнал работ - в публичный репозиторий не идёт.
+CLAUDE.md
+.claude/
