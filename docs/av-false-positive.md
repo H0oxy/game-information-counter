@@ -4,38 +4,24 @@
 Avast=AVG, Avira=WithSecure. AhnLab и Cynet своей формы для файла не
 держат вовсе - шлём письмом.
 
-| Вендор | Вердикт (VT, 2026-09-07) | Куда |
+| Вендор | Вердикт (VT, 2026-09-03) | Куда |
 |---|---|---|
-| Microsoft | `Trojan:Win32/Wacatac.C!ml` | https://www.microsoft.com/en-us/wdsi/filesubmission - Submission type "Software developer", файл + текст ниже |
+| Microsoft | `Trojan:Win32/Wacatac.B!ml` | https://www.microsoft.com/en-us/wdsi/filesubmission - Submission type "Software developer", файл + текст ниже |
 | Avast / AVG | `Win64:MalwareX-gen [Misc]` | https://www.avast.com/report-false-positive - файл + текст ниже |
 | Avira / WithSecure | `TR/W64.Agent` / `Trojan.TR/W64.Agent` | https://www.avira.com/en/analysis/submit - файл, тип "False Positive" |
 | AhnLab | `Trojan/Win.Generic.C5936529` | письмо на `v3sos@ahnlab.com`, тема "False positive report", файл в ZIP (их требование) |
-| Cynet | `Malicious (score: 100)` | https://www.cynet.com/contact-us/ , тема "False Positive Report" |
+| Cynet | `Malicious (score: 99)` | https://www.cynet.com/contact-us/ , тема "False Positive Report" |
 
 Проверено вручную 2026-09-03: у AhnLab и Cynet формы для одиночного файла нет
 или не открывается напрямую - оба идут письмом/контакт-формой. Остальные три
 рабочие.
 
-**2026-09-07: в выдаче названы только Microsoft и Cynet.** Три остальных
-вендора после прошлых репортов файл не помечают - значит репорты работают, и
-слать надо ровно тех, кто в текущей выдаче. Вердикт Microsoft сменился с
-`.B!ml` на `.C!ml`: это та же ML-эвристика, просто другая её ветка.
-
-**`!ml` в имени и есть ответ на «почему в прошлый раз не ловилось».** Такой
-вердикт ставит не сигнатура, а модель, и решает она по неподписанному файлу
-без репутации. Каждая сборка - новый хеш и новый ноль репутации, поэтому один
-и тот же код проходит в одну сборку и ловится в другую. Пересборка ничего не
-чинит, а вот подпись сертификатом чинит - см. запись про VirusTotal в
-CLAUDE.md.
-
-Вердикт из второй колонки подставляется в письмо вместо `<вердикт>`, а SHA256
-в теме - от ТОГО файла, который отправляется: он меняется с каждой сборкой, и
-репорт по чужому хешу вендор просто не свяжет с присланным файлом.
+Вердикт из второй колонки подставляется в письмо вместо `<вердикт>`.
 
 Текст обращения (английский, один на всех):
 
 ---
-Subject: False positive: game_information_counter.dll (SHA256 2cc3be45449464926cba91e86a5db5c3fd7f924c1c2821275d5a766b428b7ece)
+Subject: False positive: game_information_counter.dll (SHA256 12f5b11875d16154c90b504b7315695fe8098f5cd0aeeb5039fa23c0ca3cea51)
 
 This file is an open-source statistics overlay for the game Elden Ring. It is
 loaded into the game process by a standard mod loader (Elden Mod Loader /
