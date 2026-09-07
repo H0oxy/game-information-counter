@@ -68,6 +68,95 @@ pub fn channel_name(input: &str) -> Option<String> {
     ok.then_some(s)
 }
 
+/// Боты и сервисы чата: над врагом им делать нечего, а в списке зрителей они
+/// висят весь стрим. Нормализованы (только буквы и цифры) и отсортированы -
+/// поиск бинарный, и то и другое держит тест.
+const BOTS: &[&str] = &[
+    "blerp",
+    "botisimo",
+    "botrix",
+    "cloudbot",
+    "creatisbot",
+    "deepbot",
+    "dotabod",
+    "faceitsync",
+    "firebot",
+    "fossabot",
+    "heysidekick",
+    "hydratebot",
+    "kofistreambot",
+    "mixitup",
+    "modbot",
+    "moobot",
+    "nightbot",
+    "overlayexpert",
+    "own3d",
+    "pajbot",
+    "phantombot",
+    "playwithviewersbot",
+    "pokemoncommunitygame",
+    "r3ddybot",
+    "rivalstracker",
+    "serybot",
+    "songlistbot",
+    "soundalerts",
+    "stayhydratedbot",
+    "streamelements",
+    "streamerbot",
+    "streamlabs",
+    "streamroutinebot",
+    "streamstickers",
+    "supersweetbot",
+    "tangiabot",
+    "tidylabs",
+    "trackerggbot",
+    "twitchtokens",
+    "vodsearchchatbot",
+    "webpurify",
+    "wizebot",
+];
+
+/// Только буквы и цифры в нижнем регистре: один и тот же сервис пишут и через
+/// подчёркивание, и через точку («Sery_bot», «Streamer.bot»).
+pub fn squash(s: &str) -> String {
+    s.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+}
+
+/// Итоговый список ботов: встроенный минус снятые плюс добавленные вручную.
+///
+/// В `.ini` хранятся ОТКЛОНЕНИЯ, а не готовый список: иначе новые боты из
+/// обновления мода не доехали бы до тех, кто список уже правил.
+pub fn bot_list(off: &[String], extra: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = BOTS
+        .iter()
+        .map(|b| (*b).to_string())
+        .chain(extra.iter().map(|e| squash(e)))
+        .filter(|b| !b.is_empty() && !off.iter().any(|o| squash(o) == *b))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Он из встроенного списка? Такому чипу в окне место в «снятых», а не
+/// «своих».
+pub fn is_builtin_bot(nick: &str) -> bool {
+    BOTS.binary_search(&squash(nick).as_str()).is_ok()
+}
+
+/// Служебный аккаунт: бот из списка или сам стример.
+///
+/// Стример отсекается тем же путём, а не отдельной настройкой: его ник над
+/// врагом не значит ничего - он и так на экране, а зрителю досталось бы одним
+/// местом меньше (запрос 2026-09-07).
+///
+/// `bots` - результат `bot_list`, то есть отсортированный: список строится
+/// один раз на состав, а не на каждого из двух тысяч зрителей.
+pub fn is_service(nick: &str, channel: &str, bots: &[String]) -> bool {
+    let n = squash(nick);
+    !n.is_empty() && (squash(channel) == n || bots.binary_search(&n).is_ok())
+}
+
 /// Что пришло из чата.
 #[derive(PartialEq, Debug)]
 enum Line {
@@ -434,6 +523,44 @@ async fn session(channel: &str, tx: &Sender<Event>, generation: u64) -> Option<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Список ботов ищется бинарным поиском - несортированный или
+    /// ненормализованный он молча перестал бы находить половину.
+    #[test]
+    fn the_bot_list_stays_searchable() {
+        let mut sorted = BOTS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(BOTS, sorted.as_slice(), "список обязан быть отсортирован");
+        for b in BOTS {
+            assert_eq!(*b, squash(b), "{b}: только строчные буквы и цифры");
+        }
+    }
+
+    /// Сервис пишут как придётся - регистр, подчёркивание, точка.
+    #[test]
+    fn services_are_spotted_however_they_are_spelled() {
+        let bots = bot_list(&[], &[]);
+        assert!(is_service("Nightbot", "somechannel", &bots));
+        assert!(is_service("Sery_bot", "somechannel", &bots));
+        assert!(is_service("streamer.bot", "somechannel", &bots));
+        assert!(is_service("SomeChannel", "somechannel", &bots), "сам стример");
+        assert!(!is_service("nightbotfan", "somechannel", &bots), "похожий - не бот");
+        assert!(!is_service("viewer42", "somechannel", &bots));
+        assert!(!is_service("", "", &bots), "пустой ник не равен пустому каналу");
+    }
+
+    /// Правки списка идут отклонениями, и обе стороны обязаны работать: снятый
+    /// бот снова получает имена, добавленный - перестаёт.
+    #[test]
+    fn the_bot_list_takes_edits_from_both_sides() {
+        let off = vec!["Nightbot".to_string()];
+        let extra = vec!["My_Helper".to_string()];
+        let bots = bot_list(&off, &extra);
+        assert!(!is_service("nightbot", "chan", &bots), "снятый - обычный зритель");
+        assert!(is_service("myhelper", "chan", &bots), "добавленный - бот");
+        assert!(is_service("moobot", "chan", &bots), "остальные встроенные на месте");
+        assert!(bots.windows(2).all(|w| w[0] < w[1]), "отсортирован и без дублей");
+    }
 
     #[test]
     fn accepts_name_or_link() {

@@ -240,7 +240,10 @@ fn to_json(s: &Snapshot, c: &Config, t: &TwitchWeb) -> String {
         BossCount::Named => s.bosses_named,
         BossCount::All => s.bosses_all,
     };
-    let boss_name = s.boss_name.as_deref().unwrap_or("");
+    // Перенос считается тем же кодом, что и в игре: иначе плита в OBS
+    // осталась бы одной длинной строкой (правило про два вывода).
+    let boss_name = crate::overlay::wrap_name(s.boss_name.as_deref().unwrap_or(""), c.boss_name_wrap as usize);
+    let boss_name = boss_name.as_str();
     format!(
         concat!(
             "{{\"valid\":{},\"hidden\":{},",
@@ -296,7 +299,10 @@ fn to_json(s: &Snapshot, c: &Config, t: &TwitchWeb) -> String {
         s.viewer_deaths,
         // Имя приходит из игровых данных, которые может подменить любой мод -
         // экранируется обязательно, как и имя босса.
-        json_escape(s.nearest_boss.as_ref().map_or("", |(n, _, _)| n.as_str())),
+        json_escape(&crate::overlay::wrap_name(
+            s.nearest_boss.as_ref().map_or("", |(n, _, _)| n.as_str()),
+            c.boss_name_wrap as usize,
+        )),
         s.nearest_boss.as_ref().map_or(0.0, |(_, d, _)| *d),
         s.nearest_boss.as_ref().map_or(0.0, |(_, _, dy)| *dy),
         s.total_attempts,
@@ -522,7 +528,10 @@ mod tests {
         s.bosses_named = (3, 165);
         s.bosses_all = (9, 400);
         s.boss_name = Some("Margit, the \"Fell\" Omen".into());
-        let c = Config::default();
+        let mut c = Config::default();
+        // Тест про экранирование, а не про перенос: с ним имя приехало бы
+        // разбитым на строки и `contains` ниже проверял бы не то.
+        c.boss_name_wrap = 0;
 
         let json = to_json(&s, &c, &TwitchWeb::default());
         assert!(json.starts_with('{') && json.ends_with('}'));

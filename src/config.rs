@@ -142,7 +142,7 @@ pub struct Config {
     pub show_deaths: bool,
     pub show_bosses: bool,
 
-    /// Ближайший живой босс строкой на панели, пока он в `boss_list_radius`.
+    /// Ближайший живой босс строкой на панели, пока он в `nearest_radius`.
     pub show_nearest_boss: bool,
     pub show_boss_name: bool,
     /// Двойной босс: показывать имена обоих (каждое своей строкой) или только
@@ -216,6 +216,10 @@ pub struct Config {
     /// Счётчик боссов - самая крупная цифра панели.
     pub counter_size: f32,
     /// Имя текущего босса.
+    /// Длиннее скольких символов имя босса переносится на следующую строку.
+    /// Ноль - не переносить. По символам, а не по пикселям: см.
+    /// `overlay::wrap_name`.
+    pub boss_name_wrap: u32,
     pub boss_name_size: f32,
     /// Строка «Попытка N · время». Раньше бралась из `value_size` и меняться
     /// отдельно не могла (отзыв 2026-08-18).
@@ -320,6 +324,13 @@ pub struct Config {
     /// одной строкой через запятую: список короткий и правится мышкой, ради
     /// него отдельный файл заводить незачем.
     pub viewer_block: Vec<String>,
+    /// Кого из встроенного списка ботов считать обычным зрителем.
+    ///
+    /// В `.ini` едут ОТКЛОНЕНИЯ, а не готовый список: иначе боты, добавленные
+    /// в новой версии мода, не доехали бы до тех, кто список уже правил.
+    pub viewer_bots_off: Vec<String>,
+    /// Свои боты сверх встроенного списка.
+    pub viewer_bots_extra: Vec<String>,
     /// Сколько секунд висит карточка покупки.
     pub twitch_notify_secs: f32,
     /// Сколько заспавненных врагов может висеть в мире одновременно. Новая
@@ -356,6 +367,10 @@ pub struct Config {
     /// Что считать «рядом» в списке боссов, в метрах. Тайл открытого мира -
     /// 256 м, так что 500 - это соседний тайл и не дальше.
     pub boss_list_radius: f32,
+    /// Дальше этого ближайший босс на панели не показывается. Свой, а не общий
+    /// с `boss_list_radius`: на панели это «куда идти прямо сейчас», в списке -
+    /// «что осталось в округе», и радиусы у них разные по смыслу.
+    pub nearest_radius: f32,
 }
 
 impl Default for Config {
@@ -453,6 +468,7 @@ impl Default for Config {
             value_size: 18.0,
             counter_size: 22.0,
             boss_name_size: 16.0,
+            boss_name_wrap: 18,
             attempt_size: 18.0,
             toast_label_size: 18.0,
             toast_value_size: 18.0,
@@ -482,7 +498,7 @@ impl Default for Config {
             twitch_channel: String::new(),
             secrets_plain: false,
             show_viewer_kills: false,
-            enemy_tags: false,
+            enemy_tags: true,
             enemy_tags_bosses: true,
             enemy_tags_mobs: true,
             boss_tag_offset_x: -70.0,
@@ -492,13 +508,15 @@ impl Default for Config {
             enemy_tag_offset_x: -70.0,
             enemy_tag_height: -20.0,
             enemy_tag_size: 18.0,
-            enemy_tag_say: false,
+            enemy_tag_say: true,
             enemy_say_offset_x: 0.0,
             // Реплика встаёт НАД ником: под ним её перекрывает полоска HP.
             enemy_say_offset_y: -35.0,
             enemy_say_secs: 10.0,
             viewers_source: ViewerSource::Auto,
             viewer_block: Vec::new(),
+            viewer_bots_off: Vec::new(),
+            viewer_bots_extra: Vec::new(),
             enemy_tag_color: hex("E8D7A8"),
             twitch_notify_secs: 10.0,
             spawn_limit: 10,
@@ -513,6 +531,7 @@ impl Default for Config {
             settings_key: Key::F7,
             boss_list_key: Key::F8,
             boss_list_radius: 500.0,
+            nearest_radius: 200.0,
         }
     }
 }
@@ -651,6 +670,7 @@ impl Config {
                 // `title_size` - прежнее имя `counter_size`. Принимаем оба,
                 // чтобы уже написанные .ini не потеряли настройку.
                 "counter_size" | "title_size" => set(&mut self.counter_size, f()),
+                "boss_name_wrap" => set(&mut self.boss_name_wrap, value.trim().parse().ok()),
                 "boss_name_size" => set(&mut self.boss_name_size, f()),
                 "attempt_size" => set(&mut self.attempt_size, f()),
                 "toast_label_size" => set(&mut self.toast_label_size, f()),
@@ -692,6 +712,8 @@ impl Config {
                 "enemy_say_secs" => set(&mut self.enemy_say_secs, f()),
                 "viewers_source" => set(&mut self.viewers_source, parse_viewer_source(value)),
                 "viewer_block" => self.viewer_block = parse_nick_list(value),
+                "viewer_bots_off" => self.viewer_bots_off = parse_nick_list(value),
+                "viewer_bots_extra" => self.viewer_bots_extra = parse_nick_list(value),
                 "enemy_tag_color" => set(&mut self.enemy_tag_color, parse_color(value)),
                 "twitch_notify_secs" => set(&mut self.twitch_notify_secs, f()),
                 "spawn_limit" => set(&mut self.spawn_limit, value.parse().ok()),
@@ -703,6 +725,7 @@ impl Config {
 
                 "settings_key" => set(&mut self.settings_key, parse_key(value)),
                 "boss_list_key" => set(&mut self.boss_list_key, parse_key(value)),
+                "nearest_radius" => set(&mut self.nearest_radius, f()),
                 "boss_list_radius" => set(&mut self.boss_list_radius, f()),
                 _ => {}
             }
@@ -819,6 +842,7 @@ impl Config {
             ("value_size", self.value_size.to_string()),
             ("counter_size", self.counter_size.to_string()),
             ("boss_name_size", self.boss_name_size.to_string()),
+            ("boss_name_wrap", self.boss_name_wrap.to_string()),
             ("attempt_size", self.attempt_size.to_string()),
             ("toast_label_size", self.toast_label_size.to_string()),
             ("toast_value_size", self.toast_value_size.to_string()),
@@ -861,6 +885,8 @@ impl Config {
             ("enemy_say_secs", self.enemy_say_secs.to_string()),
             ("viewers_source", self.viewers_source.as_key().to_string()),
             ("viewer_block", self.viewer_block.join(",")),
+            ("viewer_bots_off", self.viewer_bots_off.join(",")),
+            ("viewer_bots_extra", self.viewer_bots_extra.join(",")),
             ("enemy_tag_color", color_to_hex(self.enemy_tag_color)),
             ("twitch_notify_secs", self.twitch_notify_secs.to_string()),
             ("spawn_limit", self.spawn_limit.to_string()),
@@ -870,6 +896,7 @@ impl Config {
             ("spawn_in_front", self.spawn_in_front.to_string()),
             ("spawn_block_in_boss", self.spawn_block_in_boss.to_string()),
             ("boss_list_radius", self.boss_list_radius.to_string()),
+            ("nearest_radius", self.nearest_radius.to_string()),
         ]
     }
 
@@ -1224,6 +1251,9 @@ value_size = 18
 counter_size = 22
 boss_name_size = 16
 
+; Boss names longer than this wrap onto the next line. 0 - never wrap.
+boss_name_wrap = 18
+
 ; The "deaths / fight time" rows, which have their own size.
 attempt_size = 18
 
@@ -1324,6 +1354,11 @@ viewers_source = auto
 ; Viewers that never get labeled, comma separated.
 viewer_block =
 
+; Chat bots and the streamer never get labeled. The built-in list is edited in
+; F7 -> Twitch -> Viewers; only your changes to it live here.
+viewer_bots_off =
+viewer_bots_extra =
+
 [spawn]
 
 ; Enemy spawn rewards. Which enemy is picked per reward, in F7 -> Rewards.
@@ -1345,10 +1380,13 @@ spawn_block_in_boss = true
 ; How far the boss list looks for nearby bosses, meters.
 boss_list_radius = 500
 
+; How far the nearest boss is still shown on the panel, in meters.
+nearest_radius = 200
+
 [nicknames]
 
 ; Viewer nicknames over enemies.
-enemy_tags = false
+enemy_tags = true
 enemy_tags_mobs = true
 enemy_tags_bosses = true
 
@@ -1367,7 +1405,7 @@ boss_tag_offset_y = -20
 
 ; The viewer's last chat message, under their nickname. Off by default:
 ; this is someone else's text on your stream.
-enemy_tag_say = false
+enemy_tag_say = true
 enemy_say_offset_x = 0
 enemy_say_offset_y = -35
 

@@ -402,7 +402,11 @@ function nearBoss(d) {
   // Линейка едет вместе со строкой: она отделяет «куда идти» от «как дела», и
   // без ближайшего босса отделять нечего. У заголовка секции своей линейки
   // нет - две горизонтали подряд читались как рябь (то же в overlay.rs).
-  return `<div class="r"><span class="label">${d.near_boss}</span>` +
+  // Длинное имя приезжает уже разбитым (overlay::wrap_name) - переводы строки
+  // в разметке ничего не значат, поэтому склеиваем сами. Через esc(): имя
+  // приходит из игровых данных, которые может подменить любой мод.
+  const name = d.near_boss.split(BOSS_SEP).map(esc).join('<br>');
+  return `<div class="r"><span class="label">${name}</span>` +
     `<span class="n">${nearValue(d)}</span></div><div class="rule"></div>`;
 }
 
@@ -411,7 +415,7 @@ function nearBoss(d) {
 // ногами не должна рисовать стрелку.
 function nearValue(d) {
   const dy = Math.round(d.near_dy || 0);
-  const mark = Math.abs(dy) < 2 ? '' : ` ${Math.abs(dy)}${dy > 0 ? '↑' : '↓'}`;
+  const mark = Math.abs(dy) < 2 ? '' : ` ${dy > 0 ? '↑' : '↓'}${Math.abs(dy)}`;
   return `${Math.round(d.near_dist)}м${mark}`;
 }
 
@@ -439,7 +443,7 @@ function layoutB(d, p, list) {
   const head = p ? `<span class="count">${p.killed}<span class="of">/${p.total}</span></span>` : '';
   // В ленте всё в одну строку, поэтому ближайший идёт парой, как остальные.
   const near = d.show.nearest_boss && d.near_boss
-    ? `<div class="pair"><span class="label">${d.near_boss}</span>` +
+    ? `<div class="pair"><span class="label">${esc(d.near_boss.split(BOSS_SEP).join(' '))}</span>` +
       `<span class="val">${nearValue(d)}</span></div><div class="sep"></div>`
     : '';
   const body = near + rows('b', list);

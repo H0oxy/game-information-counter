@@ -936,7 +936,53 @@ pub(crate) fn height_mark(dy: f32) -> String {
         true => if up { UP } else { DOWN },
         false => if up { '+' } else { '-' },
     };
-    format!(" {:.0}{arrow}", dy.abs())
+    format!(" {arrow}{:.0}", dy.abs())
+}
+
+/// Переносит длинное имя босса по словам: «плашка выглядит слишком длинной»
+/// (жалоба 2026-09-07). Панель тянется по самой длинной строке, поэтому
+/// перенос её и сужает.
+///
+/// По символам, а не по пикселям: `content` шрифта не знает вовсе, а кегль
+/// имени настраивается отдельно от остальных - точная мерка потребовала бы
+/// таскать сюда атлас. Слово длиннее лимита не режем: «Первородный» пополам
+/// читается хуже, чем длинная строка.
+///
+/// `max = 0` - не переносить. Уже готовые переносы (двойной босс) остаются.
+pub(crate) fn wrap_name(name: &str, max: usize) -> String {
+    if max == 0 {
+        return name.to_string();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for line in name.lines() {
+        let mut cur = String::new();
+        for word in line.split_whitespace() {
+            let room = cur.is_empty() || cur.chars().count() + 1 + word.chars().count() <= max;
+            match room {
+                true if cur.is_empty() => cur.push_str(word),
+                true => {
+                    cur.push(' ');
+                    cur.push_str(word);
+                }
+                false => {
+                    out.push(std::mem::take(&mut cur));
+                    cur.push_str(word);
+                }
+            }
+        }
+        out.push(cur);
+    }
+    out.join("
+")
+}
+
+/// То же ограничение для подписи метрики: она однострочная, поэтому режем, а
+/// не переносим. Ноль - не трогать.
+pub(crate) fn clip_name(name: &str, max: usize) -> String {
+    match max {
+        0 => name.to_string(),
+        n => clip(name, n),
+    }
 }
 
 fn content(s: &Snapshot, c: &Config) -> Content {
@@ -1038,8 +1084,11 @@ fn content(s: &Snapshot, c: &Config) -> Content {
         // вещи, а одна цифра их смешивала.
         nearest: c.show_nearest_boss.then_some(s.nearest_boss.as_ref()).flatten().map(
             |(name, d, dy)| Item {
-                label: name.clone(),
-                short: name.clone(),
+                // Переносим тем же лимитом, что и имя в бою: длинное имя
+                // следующего босса тянуло плиту ровно так же. `short` идёт в
+                // ленту B - она однострочная по определению, там режем.
+                label: wrap_name(name, c.boss_name_wrap as usize),
+                short: clip_name(name, c.boss_name_wrap as usize),
                 value: format!("{d:.0}{}{}", t("m"), height_mark(*dy)),
             },
         ),
@@ -1049,8 +1098,8 @@ fn content(s: &Snapshot, c: &Config) -> Content {
         // всем (прямой запрос 2026-08-21).
         boss: if in_fight && c.show_boss_name {
             s.boss_name.as_ref().map(|n| match c.show_all_boss_names {
-                true => n.clone(),
-                false => n.lines().next().unwrap_or_default().to_string(),
+                true => wrap_name(n, c.boss_name_wrap as usize),
+                false => wrap_name(n.lines().next().unwrap_or_default(), c.boss_name_wrap as usize),
             })
         } else {
             None
@@ -1090,6 +1139,30 @@ const PANEL_RESIZE_SECS: f32 = 0.16;
 /// Ноль - панель на экране впервые: тогда размер берётся целевым сразу, иначе
 /// она вырастала бы из точки при каждом появлении.
 static PANEL_ANIM: std::sync::Mutex<[f32; 3]> = std::sync::Mutex::new([0.0, 0.0, 0.0]);
+
+/// Положение панели по оси и не упёрлась ли она в дальний край: `(координата,
+/// прижата)`.
+///
+/// **Прижатая остаётся прижатой, даже когда сузилась.** Панель у правого края
+/// упирается в него широкой (появился босс), а сузившись возвращалась на
+/// `panel_x` - то есть отходила от края на ширину исчезнувшей строки, и
+/// выглядело это как «позиция сбилась сама» (скриншоты 2026-09-07). Держать
+/// край честнее: пользователь ставил панель, глядя на прижатую.
+///
+/// Прижатие снимается тем, что положение подвинули руками - его помнит
+/// `PANEL_PIN`, а не эта функция.
+fn place(pos: f32, win: f32, screen: f32, pinned: bool) -> (f32, bool) {
+    let edge = (screen - win).max(0.0);
+    let over = pos > edge;
+    match pinned || over {
+        true => (edge, true),
+        false => (pos.max(0.0), false),
+    }
+}
+
+/// Где панель прижата к дальнему краю и при каком положении это решено.
+static PANEL_PIN: std::sync::Mutex<([f32; 2], [bool; 2])> =
+    std::sync::Mutex::new(([f32::NAN; 2], [false; 2]));
 
 pub fn draw(ui: &Ui, s: &Snapshot, c: &Config) {
     let ct = content(s, c);
@@ -1136,14 +1209,20 @@ pub fn draw(ui: &Ui, s: &Snapshot, c: &Config) {
     let border = ui.push_style_var(StyleVar::WindowBorderSize(0.0));
 
     // Панель не должна вылезать за экран: положение задают ползунком, а
-    // размер меняется сам (появился блок боя - стало выше и шире). Прижимаем к
-    // краю по факту размера, как это давно делает карточка покупки.
+    // размер меняется сам (появился блок боя - стало выше и шире).
     let win = [draw_w + pad[0] * 2.0, win_h];
     let screen = ui.io().display_size;
-    let at = [
-        c.panel_x.min(screen[0] - win[0]).max(0.0),
-        c.panel_y.min(screen[1] - win[1]).max(0.0),
-    ];
+    let at = {
+        let mut pin = PANEL_PIN.lock().unwrap_or_else(|e| e.into_inner());
+        // Положение подвинули руками - прижатие забываем.
+        if pin.0 != [c.panel_x, c.panel_y] {
+            *pin = ([c.panel_x, c.panel_y], [false; 2]);
+        }
+        let (x, px) = place(c.panel_x, win[0], screen[0], pin.1[0]);
+        let (y, py) = place(c.panel_y, win[1], screen[1], pin.1[1]);
+        pin.1 = [px, py];
+        [x, y]
+    };
 
     ui.window("##game_information_counter")
         .position(at, Condition::Always)
@@ -1437,9 +1516,20 @@ fn progress_width(font: Font, ct: &Content, c: &Config) -> f32 {
 /// своим кодом одной свободной строкой и рядом со «СМЕРТИ»/«УРОВЕНЬ» читалась
 /// инородно (жалоба 2026-08-20). Теперь разница ровно одна - кегль значения.
 #[allow(clippy::too_many_arguments)]
+/// Зазор между строками длинной подписи. Меньше межстрочного у метрик: это
+/// одна подпись, а не две.
+fn label_line_h(c: &Config) -> f32 {
+    c.label_size + c.s(2.0)
+}
+
 fn draw_row(ui: &Ui, dl: DrawList, font: Font, item: &Item, c: &Config, w: f32, value_size: f32, trailing: f32) {
     let [x0, y] = ui.cursor_screen_pos();
     let base = row_baseline(font, y, &[value_size, c.label_size]);
+    // Длинное имя босса переносится, а не обрезается: «то, что не вместилось,
+    // просто скрывается» - прямая жалоба 2026-09-07. Значение остаётся на
+    // первой строке: это метры, и они относятся к строке целиком.
+    let mut lines = item.label.lines();
+    let first = lines.next().unwrap_or_default();
     text_tracked(
         dl,
         font,
@@ -1447,7 +1537,7 @@ fn draw_row(ui: &Ui, dl: DrawList, font: Font, item: &Item, c: &Config, w: f32, 
         c.label_color,
         c.label_size,
         c.s(c.tracking),
-        &item.label,
+        first,
     );
     let vw = measure_text(font, value_size, &item.value)[0];
     text_shadowed(
@@ -1458,14 +1548,34 @@ fn draw_row(ui: &Ui, dl: DrawList, font: Font, item: &Item, c: &Config, w: f32, 
         value_size,
         &item.value,
     );
-    ui.dummy([w, value_size.max(c.label_size) + trailing]);
+    let head = value_size.max(c.label_size);
+    let mut extra = 0.0;
+    for line in lines {
+        extra += label_line_h(c);
+        text_tracked(
+            dl,
+            font,
+            [x0, y + head + extra - c.label_size],
+            c.label_color,
+            c.label_size,
+            c.s(c.tracking),
+            line,
+        );
+    }
+    ui.dummy([w, head + extra + trailing]);
 }
 
 /// Ширина такой строки: подпись, зазор, значение.
+///
+/// У переносимой подписи ширину задаёт либо первая строка вместе со значением,
+/// либо самая длинная из остальных - значение стоит только на первой.
 fn row_width(font: Font, item: &Item, c: &Config, value_size: f32) -> f32 {
-    tracked_width(font, c.label_size, c.s(c.tracking), &item.label)
+    let tracking = c.s(c.tracking);
+    let mut lines = item.label.lines();
+    let head = tracked_width(font, c.label_size, tracking, lines.next().unwrap_or_default())
         + c.s(MIN_GAP)
-        + measure_text(font, value_size, &item.value)[0]
+        + measure_text(font, value_size, &item.value)[0];
+    lines.map(|l| tracked_width(font, c.label_size, tracking, l)).fold(head, f32::max)
 }
 
 /// Одна ячейка двухколоночной раскладки: значение крупно, подпись мелко под
@@ -2086,6 +2196,41 @@ mod tests {
     ///
     /// Обе ветки, потому что стрелка есть не всегда: в основном шрифте
     /// её нет, и подмешать системный удаётся не на всякой машине.
+    /// Прижатая к краю панель остаётся у края и когда сузилась: иначе после
+    /// боя она отходила от края на ширину исчезнувшей строки.
+    #[test]
+    fn a_panel_pinned_to_the_edge_stays_there() {
+        // Свободная панель стоит там, где поставили.
+        assert_eq!(place(100.0, 300.0, 1920.0, false), (100.0, false));
+        // Расширилась и упёрлась - прижата.
+        let (x, pinned) = place(1700.0, 300.0, 1920.0, false);
+        assert_eq!((x, pinned), (1620.0, true));
+        // Сузилась обратно: край держим, а не возвращаемся на panel_x.
+        assert_eq!(place(1700.0, 200.0, 1920.0, pinned), (1720.0, true));
+        // Панель шире экрана - к нулю, а не за левый край.
+        assert_eq!(place(100.0, 3000.0, 1920.0, false), (0.0, true));
+    }
+
+    /// Перенос по словам: панель тянется по самой длинной строке, поэтому
+    /// разбивка её и сужает. Слово длиннее лимита не режем - половина слова
+    /// читается хуже длинной строки.
+    #[test]
+    fn a_long_boss_name_wraps_by_words() {
+        assert_eq!(wrap_name("Godrick the Grafted", 12), "Godrick the
+Grafted");
+        assert_eq!(wrap_name("Godrick the Grafted", 0), "Godrick the Grafted", "0 - не переносим");
+        assert_eq!(wrap_name("Margit", 3), "Margit", "слово целиком, даже длинное");
+        // Двойной босс приезжает двумя строками - каждая переносится сама.
+        assert_eq!(wrap_name("Godrick the Grafted
+Margit", 12), "Godrick the
+Grafted
+Margit");
+        assert!(
+            wrap_name("Malenia, Blade of Miquella", 12).lines().count() > 1,
+            "длинное имя обязано разбиться"
+        );
+    }
+
     #[test]
     fn height_is_marked_only_when_it_matters() {
         use std::sync::atomic::Ordering;
@@ -2094,12 +2239,12 @@ mod tests {
         assert_eq!(height_mark(-1.9), "");
 
         ARROWS_BAKED.store(true, Ordering::Relaxed);
-        assert_eq!(height_mark(14.0), " 14\u{2191}");
-        assert_eq!(height_mark(-8.4), " 8\u{2193}");
+        assert_eq!(height_mark(14.0), " \u{2191}14");
+        assert_eq!(height_mark(-8.4), " \u{2193}8");
 
         ARROWS_BAKED.store(false, Ordering::Relaxed);
-        assert_eq!(height_mark(14.0), " 14+", "без стрелки - знак, а не «?»");
-        assert_eq!(height_mark(-8.4), " 8-");
+        assert_eq!(height_mark(14.0), " +14", "без стрелки - знак, а не «?»");
+        assert_eq!(height_mark(-8.4), " -8");
     }
 
 }

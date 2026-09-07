@@ -372,7 +372,18 @@ impl StreamHud {
                     }
                     // Поколение двигаем вместе со списком: по нему
                     // `NicknameAssigner` понимает, что пора сверяться заново.
-                    self.viewers = list;
+                    // Боты и сам стример в списке зрителей не нужны: имя над
+                    // врагом должно принадлежать тому, кто может его увидеть.
+                    let me = twitch::chat::channel_name(&self.config.twitch_channel)
+                        .unwrap_or_default();
+                    let bots = twitch::chat::bot_list(
+                        &self.config.viewer_bots_off,
+                        &self.config.viewer_bots_extra,
+                    );
+                    self.viewers = list
+                        .into_iter()
+                        .filter(|v| !twitch::chat::is_service(v, &me, &bots))
+                        .collect();
                     self.drop_blocked();
                     self.viewers_gen = self.viewers_gen.wrapping_add(1);
                 }
@@ -1208,7 +1219,7 @@ impl ImguiRenderLoop for StreamHud {
             && !snapshot.boss_fight_active
             && snapshot.boss_name.is_none()
         {
-            snapshot.nearest_boss = bosses::nearest(self.config.boss_list_radius);
+            snapshot.nearest_boss = bosses::nearest(self.config.nearest_radius);
         }
 
         // Имя босса, с которым идёт бой, игра рисует сама - связываем его со
@@ -1609,6 +1620,15 @@ impl ImguiRenderLoop for StreamHud {
             if out.changes.iter().any(|(k, _)| *k == "viewer_block") {
                 self.drop_blocked();
                 self.viewers_gen = self.viewers_gen.wrapping_add(1);
+            }
+            // Снятого с ЧС возвращаем ровно его: из списка он выкинут, а
+            // следующего состава ждать до минуты. Полное «Обновить» тут не
+            // годится - оно сняло бы имена со всех врагов в кадре.
+            if let Some(nick) = out.unblocked {
+                if !self.viewers.iter().any(|v| v.eq_ignore_ascii_case(&nick)) {
+                    self.viewers.push(nick);
+                    self.viewers_gen = self.viewers_gen.wrapping_add(1);
+                }
             }
 
             if out.clear_effects {

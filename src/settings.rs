@@ -95,6 +95,8 @@ pub struct Outcome {
     pub preview_boss: bool,
     /// Нажали «Обновить» в списке зрителей: начать перебор с нуля.
     pub refresh_viewers: bool,
+    /// Ник, снятый с «не подписывать»: его надо вернуть в список зрителей.
+    pub unblocked: Option<String>,
     /// Показать или спрятать все награды мода на дашборде Twitch.
     pub enable_all_rewards: Option<bool>,
 }
@@ -136,6 +138,7 @@ struct Ctx<'a> {
     preview_tag: bool,
     preview_boss: bool,
     refresh_viewers: bool,
+    unblocked: Option<String>,
     enable_all_rewards: Option<bool>,
 }
 
@@ -244,6 +247,10 @@ static CLIENT_ID_DRAFT: Mutex<Option<String>> = Mutex::new(None);
 /// виджета, а не настройка - в `.ini` ему делать нечего.
 static SPAWN_SEARCH: Mutex<String> = Mutex::new(String::new());
 /// Поиск по списку зрителей. Тоже состояние виджета, не настройка.
+/// Что набирают в поле «добавить бота». Состояние виджета, в `.ini` ему
+/// делать нечего.
+static BOT_DRAFT: Mutex<String> = Mutex::new(String::new());
+
 static VIEWER_SEARCH: Mutex<String> = Mutex::new(String::new());
 static SPAWN_BOSSES_ONLY: AtomicBool = AtomicBool::new(false);
 
@@ -329,6 +336,7 @@ pub fn draw(
         preview_tag: false,
         preview_boss: false,
         refresh_viewers: false,
+        unblocked: None,
         enable_all_rewards: None,
     };
     let mut opened = *open;
@@ -434,12 +442,24 @@ pub fn draw(
         preview_tag: x.preview_tag,
         preview_boss: x.preview_boss,
         refresh_viewers: x.refresh_viewers,
+        unblocked: x.unblocked,
         enable_all_rewards: x.enable_all_rewards,
     }
 }
 
 /// Тёмно-золотая тема плиты вместо стокового серого ImGui. Окно красится
 /// тем же акцентом, что и сама панель.
+/// Тёмный тон акцента - подложки, кнопки, вкладки. Множители подобраны так,
+/// чтобы на золоте по умолчанию (`DEB870`) выйти в прежние литералы.
+fn shade(c: [f32; 4], k: f32, a: f32) -> [f32; 4] {
+    [c[0] * k, c[1] * k, c[2] * k, a]
+}
+
+/// Светлый тон акцента - галочка и подсветка края: тянем к белому.
+fn tint(c: [f32; 4], k: f32, a: f32) -> [f32; 4] {
+    [c[0] + (1.0 - c[0]) * k, c[1] + (1.0 - c[1]) * k, c[2] + (1.0 - c[2]) * k, a]
+}
+
 fn theme(ui: &Ui, gold: [f32; 4], text: [f32; 4], disabled: [f32; 4]) -> Vec<hudhook::imgui::ColorStackToken<'_>> {
     // Окно открывают прямо в игре, и сквозь него должно быть видно, что
     // происходит на экране - иначе положение панели настраивается вслепую.
@@ -455,40 +475,40 @@ fn theme(ui: &Ui, gold: [f32; 4], text: [f32; 4], disabled: [f32; 4]) -> Vec<hud
         // Светлая подсветка по краю вместо глухой рамки: тёмная плашка на
         // тёмной сцене иначе сливается, а резкая золотая обводка вокруг
         // каждой галочки читалась как решётка (обе попытки 2026-08-20).
-        (StyleColor::Border, [1.0, 0.95, 0.82, 0.28]),
+        (StyleColor::Border, tint(gold, 0.85, 0.28)),
         (StyleColor::Text, text),
         (StyleColor::TextDisabled, disabled),
         // Подложка галочек, полей и ползунков. На прозрачном окне их не было
         // видно вовсе (жалоба 2026-08-20). Контраст даёт ТЕМНОТА, а не
         // обводка, но не в чёрноту: глухие плашки читались как дырки.
-        (StyleColor::FrameBg, [0.09, 0.08, 0.06, 0.88]),
-        (StyleColor::FrameBgHovered, [0.16, 0.14, 0.09, 0.94]),
-        (StyleColor::FrameBgActive, [0.24, 0.20, 0.11, 0.98]),
+        (StyleColor::FrameBg, shade(gold, 0.11, 0.88)),
+        (StyleColor::FrameBgHovered, shade(gold, 0.19, 0.94)),
+        (StyleColor::FrameBgActive, shade(gold, 0.27, 0.98)),
         // Сама галочка/точка - светлее акцента: золото по золоту на золотой
         // же рамке различается плохо.
-        (StyleColor::CheckMark, [1.0, 0.94, 0.76, 1.0]),
+        (StyleColor::CheckMark, tint(gold, 0.80, 1.0)),
         (StyleColor::SliderGrab, gold),
         (StyleColor::SliderGrabActive, [1.0, 1.0, 1.0, 1.0]),
         // Кнопки заметно светлее плашек: по ним кликают, и они должны
         // читаться как кнопки, а не как подписи.
-        (StyleColor::Button, [0.26, 0.21, 0.12, 0.9]),
-        (StyleColor::ButtonHovered, [0.38, 0.31, 0.17, 0.95]),
+        (StyleColor::Button, shade(gold, 0.29, 0.9)),
+        (StyleColor::ButtonHovered, shade(gold, 0.43, 0.95)),
         (StyleColor::ButtonActive, crate::overlay::with_alpha(gold, 0.7)),
         (StyleColor::Header, crate::overlay::with_alpha(gold, 0.22)),
         (StyleColor::HeaderHovered, crate::overlay::with_alpha(gold, 0.38)),
         (StyleColor::HeaderActive, crate::overlay::with_alpha(gold, 0.55)),
         (StyleColor::Separator, crate::overlay::with_alpha(gold, 0.4)),
         (StyleColor::TitleBg, [0.02, 0.02, 0.03, 1.0]),
-        (StyleColor::TitleBgActive, [0.10, 0.08, 0.04, 1.0]),
+        (StyleColor::TitleBgActive, shade(gold, 0.11, 1.0)),
         (StyleColor::TitleBgCollapsed, [0.02, 0.02, 0.03, 1.0]),
         (StyleColor::ScrollbarBg, [0.0, 0.0, 0.0, 0.3]),
         (StyleColor::ScrollbarGrab, crate::overlay::with_alpha(gold, 0.4)),
         (StyleColor::ScrollbarGrabHovered, crate::overlay::with_alpha(gold, 0.6)),
         // Вкладки по умолчанию стокового синего - перекрашиваем под остальное.
-        (StyleColor::Tab, [0.10, 0.08, 0.05, 0.85]),
+        (StyleColor::Tab, shade(gold, 0.11, 0.85)),
         (StyleColor::TabHovered, crate::overlay::with_alpha(gold, 0.5)),
         (StyleColor::TabActive, crate::overlay::with_alpha(gold, 0.34)),
-        (StyleColor::TabUnfocused, [0.08, 0.07, 0.05, 0.75]),
+        (StyleColor::TabUnfocused, shade(gold, 0.09, 0.75)),
         (StyleColor::TabUnfocusedActive, crate::overlay::with_alpha(gold, 0.24)),
     ];
     colors.iter().map(|(s, col)| ui.push_style_color(*s, *col)).collect()
@@ -1049,6 +1069,9 @@ fn page_panel(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
         check(ui, &mut x.changes, t("Progress bar"), "show_boss_bar", &mut x.c.show_boss_bar);
         // Радиус у него общий со списком по F8 - там же и ползунок.
         check(ui, &mut x.changes, t("Nearest boss"), "show_nearest_boss", &mut x.c.show_nearest_boss);
+        if x.c.show_nearest_boss {
+            slider(ui, &mut x.changes, t("Radius, m"), "nearest_radius", &mut x.c.nearest_radius, 50.0, 3000.0);
+        }
         check(ui, &mut x.changes, t("Deaths"), "show_deaths", &mut x.c.show_deaths);
         check(ui, &mut x.changes, t("Deaths on bosses"), "show_deaths_on_boss", &mut x.c.show_deaths_on_boss);
         check(ui, &mut x.changes, t("Viewer kills"), "show_viewer_kills", &mut x.c.show_viewer_kills);
@@ -1133,6 +1156,8 @@ fn page_panel(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
         font_slider(ui, &mut x.changes, t("Values"), "value_size", &mut x.c.value_size, 8.0, 48.0, k);
         font_slider(ui, &mut x.changes, t("Boss counter"), "counter_size", &mut x.c.counter_size, 8.0, 56.0, k);
         font_slider(ui, &mut x.changes, t("Boss name"), "boss_name_size", &mut x.c.boss_name_size, 8.0, 40.0, k);
+        // Ноль - без переноса. Длинное имя иначе тянет плиту через пол-экрана.
+        int_slider(ui, &mut x.changes, t("Name wrap"), "boss_name_wrap", &mut x.c.boss_name_wrap, 0, 40);
         x.preview_fight |= ui.is_item_active();
         font_slider(ui, &mut x.changes, t("Fight rows"), "attempt_size", &mut x.c.attempt_size, 8.0, 48.0, k);
         // Пока тянут - на экране образец боя: вне боя этих строк нет вовсе.
@@ -1312,13 +1337,14 @@ fn page_twitch(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
         }
     });
 
-    // Одна плитка на всю тему имён над врагами: откуда они берутся (канал,
-    // источник, список, ЧС) и как выглядят. Двумя плитками канал стоял в
-    // одной, а подпись в другой, и между ними приходилось прыгать
-    // (запрос 2026-09-03).
-    g.card(ui, p, t("Viewers"), "зрители канал чат список поиск чс блок источник ник никнейм подпись враги размер цвет viewers channel chat list search block source nickname label enemies size color", |w| {
+    // Откуда берутся имена: канал, источник, список, ЧС.
+    g.card(ui, p, t("Viewers"), "зрители канал чат список поиск чс блок источник viewers channel chat list search block source", |w| {
         section_viewers(ui, x, w);
-        group(ui, x.c, t("NICKNAMES"));
+    });
+
+    // Как выглядит подпись. Своей плиткой, а не секцией внутри «Зрителей»
+    // (запрос 2026-09-07): настраивают её отдельно от источника имён.
+    g.card(ui, p, t("Nicknames"), "ник никнейм подпись реплика враги боссы размер цвет nickname label say enemies bosses size color", |_| {
         section_nicknames(ui, x);
     });
 
@@ -1482,8 +1508,23 @@ fn section_viewers(ui: &Ui, x: &mut Ctx, w: f32) {
     }
     chatters_source(ui, x.c);
 
-    group(ui, x.c, &format!("{} ({})", t("LIST"), x.viewers.len()));
     let mut search = VIEWER_SEARCH.lock().unwrap_or_else(|e| e.into_inner());
+    let needle = search.to_lowercase();
+    let shown: Vec<String> = x
+        .viewers
+        .iter()
+        .filter(|v| needle.is_empty() || v.to_lowercase().contains(&needle))
+        .take(CHIP_CAP)
+        .cloned()
+        .collect();
+    // Поиск показывает, сколько из скольких: на людном канале «(1843)» само по
+    // себе не говорит, нашлось ли что-нибудь.
+    let count = match needle.is_empty() {
+        true => x.viewers.len().to_string(),
+        false => format!("{} / {}", shown.len(), x.viewers.len()),
+    };
+    group(ui, x.c, &format!("{} ({count})", t("LIST")));
+
     ui.set_next_item_width(w * 0.6);
     let _ = ui.input_text("##viewer_search", &mut search).hint(t("Search")).build();
     ui.same_line_with_spacing(0.0, 12.0);
@@ -1491,51 +1532,154 @@ fn section_viewers(ui: &Ui, x: &mut Ctx, w: f32) {
         x.refresh_viewers = true;
     }
 
-    let needle = search.to_lowercase();
-    let shown: Vec<&String> =
-        x.viewers.iter().filter(|v| needle.is_empty() || v.to_lowercase().contains(&needle)).collect();
     // Своё окно со скроллом: зрителей бывает две тысячи, а плитка должна
     // остаться плиткой.
-    ui.child_window("##viewer_list").size([w * 0.98, 140.0 * x.k]).build(|| {
+    let mut block: Option<String> = None;
+    ui.child_window("##viewer_list").size([w * 0.98, 150.0 * x.k]).build(|| {
         if shown.is_empty() {
             ui.text_disabled(t("empty"));
         }
-        for nick in &shown {
-            // Крестик слева от ника: он и есть «не подписывать этого».
-            if flat_button(ui, x.c, &format!("x###block_{nick}")) {
-                x.c.viewer_block.push(nick.to_lowercase());
-                let list = x.c.viewer_block.join(",");
-                x.changes.push(("viewer_block", list));
-            }
-            ui.same_line_with_spacing(0.0, 6.0);
-            ui.text(clip_to(ui, nick, ui.content_region_avail()[0]));
+        if let Some(i) = chips(ui, "vw", &shown, x.viewers.len()) {
+            block = Some(shown[i].to_lowercase());
         }
     });
-    hint(ui, t("The cross adds a viewer to the list below."));
+    hint(ui, t("Click a nickname to stop using it."));
+    if let Some(nick) = block {
+        x.c.viewer_block.push(nick);
+        let list = x.c.viewer_block.join(",");
+        x.changes.push(("viewer_block", list));
+    }
 
+    bot_list_ui(ui, x, w);
+
+    // Ниже - только ЧС, и пустым он места не занимает: список пополняется
+    // кликом по нику выше, а не здесь.
     if x.c.viewer_block.is_empty() {
         return;
     }
-    ui.dummy([1.0, 3.0 * x.k]);
-    ui.text_disabled(&format!("{}: {}", t("NEVER LABELED"), x.c.viewer_block.len()));
+    group(ui, x.c, &format!("{} ({})", t("NEVER LABELED"), x.c.viewer_block.len()));
+    // Красный тон, а не общий: это не «ещё один список зрителей», а изъятые.
+    let hot = [
+        ui.push_style_color(StyleColor::Button, [0.36, 0.15, 0.13, 0.85]),
+        ui.push_style_color(StyleColor::ButtonHovered, [0.52, 0.20, 0.17, 0.92]),
+    ];
     let mut back: Option<usize> = None;
+    let list: Vec<String> = x.c.viewer_block.clone();
     ui.child_window("##viewer_block").size([w * 0.98, 70.0 * x.k]).build(|| {
-        for (i, nick) in x.c.viewer_block.iter().enumerate() {
-            if flat_button(ui, x.c, &format!("+###unblock_{nick}")) {
-                back = Some(i);
-            }
-            ui.same_line_with_spacing(0.0, 6.0);
-            ui.text(clip_to(ui, nick, ui.content_region_avail()[0]));
-        }
+        back = chips(ui, "bl", &list, list.len());
     });
+    drop(hot);
+    hint(ui, t("Click to bring it back."));
     if let Some(i) = back {
-        x.c.viewer_block.remove(i);
+        // Возвращаем в список ровно его, а не «Обновить»: тот заводит заново
+        // весь `NicknameAssigner`, то есть снимает имена со ВСЕХ врагов в
+        // кадре и сбрасывает кулдауны (жалоба 2026-09-07). Вернуть одного
+        // дешевле, чем начать перебор с нуля.
+        x.unblocked = Some(x.c.viewer_block.remove(i));
         let list = x.c.viewer_block.join(",");
         x.changes.push(("viewer_block", list));
-        // Вернувшийся получит имя только со следующим составом списка -
-        // из `viewers` его уже выкинули. Обновление ускоряет это.
-        x.refresh_viewers = true;
     }
+}
+
+/// Боты и сервисы: встроенный список плюс свои, правится прямо тут.
+///
+/// В `.ini` уезжают только отклонения (`viewer_bots_off` /
+/// `viewer_bots_extra`), поэтому боты, добавленные в новой версии мода,
+/// доезжают и до тех, кто список уже правил.
+fn bot_list_ui(ui: &Ui, x: &mut Ctx, w: f32) {
+    let bots = crate::twitch::chat::bot_list(&x.c.viewer_bots_off, &x.c.viewer_bots_extra);
+    group(ui, x.c, &format!("{} ({})", t("BOTS"), bots.len()));
+
+    let mut add = BOT_DRAFT.lock().unwrap_or_else(|e| e.into_inner());
+    ui.set_next_item_width(w * 0.6);
+    let entered = ui
+        .input_text("##bot_add", &mut add)
+        .hint(t("Add a nickname"))
+        .enter_returns_true(true)
+        .build();
+    ui.same_line_with_spacing(0.0, 12.0);
+    if (button(ui, t("Add")) || entered) && !add.trim().is_empty() {
+        let nick = crate::twitch::chat::squash(&add);
+        // Снятый обратно в боты возвращается снятием пометки, а не второй
+        // записью: иначе он лежал бы в обоих списках сразу.
+        x.c.viewer_bots_off.retain(|o| crate::twitch::chat::squash(o) != nick);
+        let known = x.c.viewer_bots_extra.iter().any(|e| crate::twitch::chat::squash(e) == nick);
+        if !nick.is_empty() && !known && !crate::twitch::chat::is_builtin_bot(&nick) {
+            x.c.viewer_bots_extra.push(nick);
+        }
+        push_bot_lists(x);
+        add.clear();
+    }
+    drop(add);
+
+    let mut drop_bot: Option<String> = None;
+    ui.child_window("##bot_list").size([w * 0.98, 110.0 * x.k]).build(|| {
+        if let Some(i) = chips(ui, "bot", &bots, bots.len()) {
+            drop_bot = Some(bots[i].clone());
+        }
+    });
+    hint(ui, t("Click to allow it back."));
+
+    if let Some(nick) = drop_bot {
+        x.c.viewer_bots_extra.retain(|e| crate::twitch::chat::squash(e) != nick);
+        if crate::twitch::chat::is_builtin_bot(&nick) {
+            x.c.viewer_bots_off.push(nick.clone());
+        }
+        push_bot_lists(x);
+        // Тем же путём, что и снятие с ЧС: вернуть одного, а не заводить
+        // заново весь перебор имён.
+        x.unblocked = Some(nick);
+    }
+}
+
+/// Обе половины списка пишутся вместе: правка одной почти всегда трогает и
+/// вторую.
+fn push_bot_lists(x: &mut Ctx) {
+    x.changes.push(("viewer_bots_off", x.c.viewer_bots_off.join(",")));
+    x.changes.push(("viewer_bots_extra", x.c.viewer_bots_extra.join(",")));
+}
+
+/// Сколько чипов рисуем за раз. Зрителей бывает две тысячи, и мерить каждый
+/// ник каждый кадр незачем: остальных находит поиск, а сколько их - говорит
+/// последний чип.
+const CHIP_CAP: usize = 200;
+
+/// Ники потоком: чип по ширине текста, ряд набирается, пока влезает.
+///
+/// Кнопка, а не текст с крестиком: чип и есть действие, и промахнуться по
+/// нему нельзя. Возвращает индекс кликнутого.
+///
+/// `total` - сколько их всего: хвост сверх `CHIP_CAP` показывается нерабочим
+/// чипом «+N», иначе список молча врал бы о составе.
+fn chips(ui: &Ui, id: &str, items: &[String], total: usize) -> Option<usize> {
+    let pad = ui.clone_style().frame_padding[0] * 2.0;
+    let gap = 6.0;
+    let room = ui.content_region_avail()[0];
+    let mut line = 0.0;
+    let mut hit = None;
+    for (i, nick) in items.iter().enumerate() {
+        // Ник шире окна режем: иначе чип уводит содержимое в горизонтальный
+        // скролл, а плитка узкая.
+        let nick = clip_to(ui, nick, room - pad);
+        let cw = ui.calc_text_size(&nick)[0] + pad;
+        if line > 0.0 && line + gap + cw <= room {
+            ui.same_line_with_spacing(0.0, gap);
+            line += gap + cw;
+        } else {
+            line = cw;
+        }
+        if ui.button_with_size(format!("{nick}###{id}_{i}"), [cw, 0.0]) {
+            hit = Some(i);
+        }
+    }
+    if total > items.len() {
+        let rest = format!("+{}", total - items.len());
+        if line > 0.0 {
+            ui.same_line_with_spacing(0.0, gap);
+        }
+        ui.text_disabled(&rest);
+    }
+    hit
 }
 
 /// Как выглядит подпись над врагом. Нижняя половина плитки «Зрители»: имена
@@ -1550,7 +1694,7 @@ fn section_nicknames(ui: &Ui, x: &mut Ctx) {
         return;
     }
     // Подписывать некем - видно сразу, а не после долгого «почему ничего не
-    // появляется». Канал задаётся тут же, выше.
+    // появляется». Канал задаётся в плитке «Зрители».
     if x.c.twitch_channel.trim().is_empty() || x.viewers.is_empty() {
         hint(ui, t("No viewers yet - the enemies bought by them are still labeled."));
     }
@@ -1574,8 +1718,8 @@ fn section_nicknames(ui: &Ui, x: &mut Ctx) {
     hint(ui, t("Offsets are given for 1080p."));
 
     group(ui, x.c, t("CHAT MESSAGE"));
-    // Чужой текст на экране стрима - решает стример, поэтому выключено по
-    // умолчанию и подписано прямо.
+    // Чужой текст на экране стрима - решает стример, поэтому галочка своя, а
+    // не часть «Показывать никнеймы».
     check(ui, &mut x.changes, t("Show the message"), "enemy_tag_say", &mut x.c.enemy_tag_say);
     hint(
         ui,
@@ -3436,9 +3580,12 @@ const TOAST_PREVIEW_LINGER: std::time::Duration = std::time::Duration::from_mill
 /// что у заголовков плиток и секций раскрытой награды. Нужна там, где в одной
 /// плитке настраиваются разные вещи и сплошной список ползунков не читается.
 fn group(ui: &Ui, c: &Config, name: &str) {
-    // Ширина - остаток строки плитки: своей она тут не знает, а виджеты ImGui
-    // о ней не знают вовсе (правило про `CollapsingHeader` в шапке модуля).
-    let w = ui.content_region_avail()[0];
+    // `content_region_avail` здесь НЕ годится: он считает остаток до правого
+    // края ОКНА, а не плитки, и в два столбца линейка уходила через весь
+    // раздел поверх соседней плитки (скриншот 2026-09-07). Ширину плитки
+    // знает только `Grid`, и он кладёт её в item width - оттуда её берёт и
+    // `fit`.
+    let w = ui.calc_item_width();
     ui.dummy([1.0, 5.0]);
     ui.text_colored(crate::overlay::with_alpha(c.accent_color, 0.70), name);
     ui.dummy([1.0, 1.0]);
@@ -3824,6 +3971,9 @@ mod tests {
                 TOAST_OPEN.store(true, Ordering::Relaxed);
                 let ui = ctx.frame();
                 let mut c = base.clone();
+                // Непустой ЧС: у него свой стек цветов вокруг чипов, и
+                // несведённым он утёк бы на всё, что рисуется дальше.
+                c.viewer_block = vec!["troll".to_string()];
                 let mut drag = None;
                 let mut capture = None;
                 let mut x = Ctx {
@@ -3855,6 +4005,7 @@ mod tests {
                     preview_tag: false,
                     preview_boss: false,
                     refresh_viewers: false,
+                    unblocked: None,
                     enable_all_rewards: None,
                 };
                 ui.window("##probe").size([760.0, 620.0], Condition::Always).build(|| {

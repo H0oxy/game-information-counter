@@ -77,6 +77,22 @@ pub struct Row {
     pos: (f32, f32, f32),
 }
 
+impl Row {
+    /// Насколько до него добираться: горизонталь и высота вместе.
+    fn reach(&self) -> Option<f32> {
+        Some(reach(self.dist?, self.dy.unwrap_or(0.0)))
+    }
+}
+
+/// Расстояние с учётом высоты - им и решается, кто ближе.
+///
+/// Показываем метры и высоту раздельно (босс под ногами и босс в километре по
+/// прямой - разные вещи), а вот ВЫБИРАТЬ по одной горизонтали нельзя: живьём
+/// босс в километре под землёй обходил соседа на своём уровне (2026-09-07).
+fn reach(dist: f32, dy: f32) -> f32 {
+    dist.hypot(dy)
+}
+
 /// Всё, что строится из парамов один раз: они в рантайме не меняются.
 #[derive(Default)]
 struct Registry {
@@ -687,6 +703,43 @@ pub fn probe() -> Vec<String> {
         reg.bosses.iter().filter(|b| b.name.is_some()).count(),
         reg.bosses.iter().filter(|b| b.place.is_some()).count()
     ));
+
+    // Кто рядом и ПО КАКОМУ ФЛАГУ мод про него судит. Это и есть ответ на
+    // «убил, а счётчик не двинулся»: строка называет флаг и его состояние.
+    let (Ok(efm), Some(me)) = (unsafe { CSEventFlagMan::instance() }, player_at()) else {
+        return out;
+    };
+    let mut near: Vec<(f32, &Boss)> = reg
+        .bosses
+        .iter()
+        .filter_map(|b| distance(me.0, me.1, b.map, b.pos).map(|(d, _)| (d, b)))
+        .collect();
+    near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (d, b) in near.iter().take(6) {
+        out.push(format!(
+            "  {} {} {d:.0}м {}",
+            b.flag,
+            if efm.virtual_memory_flag.get_flag(b.flag) { "убит" } else { "жив" },
+            b.name.as_deref().unwrap_or("?")
+        ));
+    }
+    // Что игра подняла в том же блоке флагов у ближайшего ЖИВОГО. Если
+    // убийство ставит не тот флаг, что лежит в параме, он окажется здесь.
+    //
+    // ponytail: тысяча опросов флага на кадр. Окно диагностики и без того
+    // обходит парамы каждый кадр, а живёт оно только под `debug = true`.
+    if let Some((_, b)) = near.iter().find(|(_, b)| !efm.virtual_memory_flag.get_flag(b.flag)) {
+        let base = b.flag / 1000 * 1000;
+        let up: Vec<String> = (base..base + 1000)
+            .filter(|f| efm.virtual_memory_flag.get_flag(*f))
+            .map(|f| (f % 1000).to_string())
+            .take(48)
+            .collect();
+        out.push(format!("  подняты в {}xxx:", b.flag / 1000));
+        for chunk in up.chunks(12) {
+            out.push(format!("  {}", chunk.join(" ")));
+        }
+    }
     out
 }
 
@@ -793,7 +846,7 @@ pub fn rows(radius: f32) -> Vec<Row> {
                 // игрок, сплошь и рядом не принадлежит ни одному боссу -
                 // живьём 2026-08-27 фильтр давал ноль посреди Кэлида.
                 here: (my_place.is_some() && my_place == b.place)
-                    || dist.is_some_and(|d| d <= radius),
+                    || dist.is_some_and(|d| reach(d, dy.unwrap_or(0.0)) <= radius),
                 dist,
                 dy,
                 killed: efm.virtual_memory_flag.get_flag(b.flag),
@@ -823,7 +876,7 @@ fn collapse(rows: &mut Vec<Row>) {
                 // Из группы показываем ближайшего: до остальных всё равно
                 // дальше, а одно число на строку - это одно число.
                 // Из группы показываем ближайшего - вместе с его высотой.
-                if r.dist.unwrap_or(f32::MAX) < prev.dist.unwrap_or(f32::MAX) {
+                if r.reach().unwrap_or(f32::MAX) < prev.reach().unwrap_or(f32::MAX) {
                     prev.dist = r.dist;
                     prev.dy = r.dy;
                 }
@@ -852,7 +905,7 @@ fn sort_rows(rows: &mut [Row]) {
     let mut nearest: HashMap<String, f32> = HashMap::new();
     for r in rows.iter().filter(|r| !r.killed) {
         let slot = nearest.entry(r.place.clone()).or_insert(f32::MAX);
-        *slot = slot.min(r.dist.unwrap_or(f32::MAX));
+        *slot = slot.min(r.reach().unwrap_or(f32::MAX));
     }
     let near = |p: &str| nearest.get(p).copied().unwrap_or(f32::MAX);
     let cmp = |x: f32, y: f32| x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal);
@@ -922,9 +975,10 @@ pub fn nearest(radius: f32) -> Option<(String, f32, f32)> {
     rows(radius)
         .into_iter()
         .filter(|r| !r.killed)
-        .filter_map(|r| Some((r.name, r.dist?, r.dy.unwrap_or(0.0))))
-        .filter(|(_, d, _)| *d <= radius)
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .filter_map(|r| Some((r.reach()?, r.name, r.dist?, r.dy.unwrap_or(0.0))))
+        .filter(|(reach, ..)| *reach <= radius)
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(_, name, d, dy)| (name, d, dy))
 }
 
 /// Забыть все выученные имена.
@@ -981,6 +1035,11 @@ pub fn learn(names: &[String]) {
     if LEARNED.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
         return;
     }
+    // Точная связка вперёд привязки по расстоянию: она не требует радиуса
+    // вовсе. Сработала - имени здесь больше делать нечего.
+    if learn_by_flag(&names[0]) {
+        return;
+    }
     let Some(me) = player_at() else {
         return;
     };
@@ -1027,6 +1086,111 @@ pub fn learn(names: &[String]) {
     *ALL.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// Безымянные боссы, чей флаг победы на начало боя ещё не поднят, когда мы
+/// смотрели на них в прошлый раз и выучили ли уже кого-то в этом бою.
+static WATCHED: Mutex<(Vec<u32>, Option<Instant>, bool)> =
+    Mutex::new((Vec::new(), None, false));
+
+/// Пауза между вызовами, после которой снимок считается протухшим: `learn`
+/// зовётся каждый кадр боя, значит перерыв - это конец боя.
+const WATCH_GAP: Duration = Duration::from_secs(3);
+
+/// Дальше этого флаг считается чужим. Шире `LEARN_RADIUS` на порядок - точка
+/// парама у полевого босса далеко от места боя, - но не «вся карта»: тайл
+/// открытого мира это 256 м, то есть четыре тайла вокруг.
+const WATCH_RADIUS: f32 = 1000.0;
+
+/// Связывает имя с флагом, который поднялся ПОКА игра рисует это имя.
+///
+/// Радиуса не требует вовсе, и этим лучше привязки по расстоянию: у полевого
+/// босса точка из парама - середина его маршрута, а дерутся с ним где угодно.
+/// Живьём 2026-09-07 Ночной всадник так и остался безымянным - убит, флаг
+/// поднят, а до точки парама 212 м при `LEARN_RADIUS` 150.
+///
+/// Ловится это уже после победы: полоска пропадает раньше флага, зато
+/// `boss_name` держится весь `BOSS_LINGER`, и `learn` продолжает зваться.
+///
+/// **В снимок идут только те, кто рядом.** Флаг может подняться где угодно и
+/// по любой причине - событие карты, второй бой следом, - и без этого имя
+/// босса, с которым игрок дерётся сейчас, уехало бы боссу на другом конце
+/// Междуземья. `distance` заодно отсекает другие карты: у неё сравнимы либо
+/// два тайла открытого мира, либо одна и та же карта.
+///
+/// **Замки только по одному.** Тот же фугас, что и в `learn`: `registry()`
+/// внутри берёт `LEARNED`, поэтому реестр читается отдельным шагом.
+fn learn_by_flag(name: &str) -> bool {
+    let Ok(efm) = (unsafe { CSEventFlagMan::instance() }) else {
+        return false;
+    };
+    let stale = {
+        let w = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
+        w.1.is_none_or(|t| t.elapsed() > WATCH_GAP)
+    };
+    if stale {
+        // Позиции нет (идёт загрузка) - снимок не строим вовсе: пустой он
+        // протух бы молча, и весь бой прошёл бы впустую.
+        let Some(me) = player_at() else {
+            return false;
+        };
+        let fresh: Vec<u32> = {
+            let mut all = ALL.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(reg) = registry(&mut all) else {
+                return false;
+            };
+            reg.bosses
+                .iter()
+                .filter(|b| b.name.is_none() && !efm.virtual_memory_flag.get_flag(b.flag))
+                .filter(|b| {
+                    distance(me.0, me.1, b.map, b.pos).is_some_and(|(d, _)| d <= WATCH_RADIUS)
+                })
+                .map(|b| b.flag)
+                .collect()
+        };
+        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) = (fresh, Some(Instant::now()), false);
+        return false;
+    }
+
+    let flag = {
+        let mut w = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
+        w.1 = Some(Instant::now());
+        // Этот бой уже назван. Отвечаем «да» до конца боя, иначе привязка по
+        // расстоянию повесила бы то же имя ещё и соседней строке в 150 м.
+        //
+        // ponytail: снимок обнуляет только пауза, поэтому второй безымянный
+        // босс, начатый в те же три секунды, по флагу не выучится. Сбросом по
+        // смене имени лечится, но случай требует двух безымянных подряд без
+        // передышки - таких на всю игру десяток и стоят они по разным углам.
+        if w.2 {
+            return true;
+        }
+        let Some(flag) = pick_risen(&mut w.0, |f| efm.virtual_memory_flag.get_flag(f)) else {
+            return false;
+        };
+        w.2 = true;
+        flag
+    };
+    {
+        let mut learned = LEARNED.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(learned) = learned.as_mut() else {
+            return false;
+        };
+        learned.insert(flag, name.to_string());
+        save_learned(learned);
+    }
+    *ALL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    true
+}
+
+/// Кто из наблюдаемых поднялся - и снимок гасится целиком.
+///
+/// Целиком, а не одной записью: один бой - одно имя. Поднимись за кадр два
+/// флага, второй получил бы то же самое имя на следующем.
+fn pick_risen(watch: &mut Vec<u32>, up: impl Fn(u32) -> bool) -> Option<u32> {
+    let flag = watch.iter().copied().find(|f| up(*f))?;
+    watch.clear();
+    Some(flag)
+}
+
 /// Файл выученных имён: `флаг = имя`, по строке на босса.
 fn save_learned(learned: &HashMap<u32, String>) {
     let text: String = {
@@ -1043,6 +1207,29 @@ fn save_learned(learned: &HashMap<u32, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ближе тот, до кого ближе ДОБИРАТЬСЯ. Живьём босс в километре под
+    /// землёй обходил соседа на своём уровне: по горизонтали он был ближе.
+    #[test]
+    fn height_counts_when_picking_the_nearest() {
+        assert!(reach(50.0, 1000.0) > reach(300.0, 0.0), "километр вниз дальше трёхсот метров по прямой");
+        assert_eq!(reach(30.0, 40.0), 50.0, "обычная гипотенуза");
+        assert_eq!(reach(120.0, 0.0), 120.0, "на своём уровне - те же метры");
+    }
+
+    /// Один бой даёт одно имя: поднявшихся за кадр может быть двое, и второй
+    /// не должен получить имя первого на следующем кадре.
+    #[test]
+    fn a_fight_names_exactly_one_boss() {
+        let mut watch = vec![10, 20, 30];
+        assert_eq!(pick_risen(&mut watch, |f| f == 20 || f == 30), Some(20));
+        assert!(watch.is_empty(), "снимок гасится целиком");
+        assert_eq!(pick_risen(&mut watch, |_| true), None, "гасить больше нечего");
+
+        let mut watch = vec![10, 20];
+        assert_eq!(pick_risen(&mut watch, |_| false), None);
+        assert_eq!(watch.len(), 2, "никто не поднялся - ждём дальше");
+    }
 
     /// Имя адресуется моделью существа. Числа сверены с выгрузкой `NpcName`
     /// из игры: на них стоит и таблица, и распознавание боссов из модов.
