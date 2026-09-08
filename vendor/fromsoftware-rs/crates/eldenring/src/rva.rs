@@ -7,6 +7,7 @@ mod bundle;
 mod rva_jp;
 mod rva_ww;
 mod rva_ww_270;
+mod rva_ww_271;
 
 pub use bundle::RvaBundle;
 
@@ -19,6 +20,8 @@ enum ERGameVersion {
     /// Patch 2.7, worldwide. Mapped locally with `tools/binary-mapper`;
     /// see `vendor/README.md` in the mod repository.
     Ww270,
+    /// Patch 2.7.1, worldwide. Mapped locally the same way as 2.7.0.
+    Ww271,
 }
 
 impl GameVersion for ERGameVersion {
@@ -29,6 +32,7 @@ impl GameVersion for ERGameVersion {
             (LANG_ID_EN, "2.6.2.0") => Some(Self::Ww262),
             (LANG_ID_JP, "2.6.2.1") => Some(Self::Jp2621),
             (LANG_ID_EN, "2.7.0.0") => Some(Self::Ww270),
+            (LANG_ID_EN, "2.7.1.0") => Some(Self::Ww271),
             _ => None,
         }
     }
@@ -40,6 +44,7 @@ impl ERGameVersion {
             Self::Ww262 => rva_ww::RVAS,
             Self::Jp2621 => rva_jp::RVAS,
             Self::Ww270 => rva_ww_270::RVAS,
+            Self::Ww271 => rva_ww_271::RVAS,
         }
     }
 }

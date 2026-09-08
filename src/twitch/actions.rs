@@ -46,6 +46,7 @@ struct Held {
 
 /// Что ждёт своей очереди. Вместе с действием несём и то, чем вернуть баллы,
 /// если исполнить так и не удастся.
+#[derive(Clone)]
 pub struct Pending {
     pub action: super::rewards::Action,
     pub reward_id: String,
@@ -54,6 +55,16 @@ pub struct Pending {
     /// (см. `spawn::SpawnState`), а не случайного зрителя из ротации.
     pub viewer: String,
 }
+
+/// Сколько покупок ждёт исполнения, прежде чем новая отбивается возвратом
+/// баллов.
+///
+/// Константа, а не настройка: плитка «Очередь покупок» удалена по запросу
+/// 2026-09-08, а сама очередь осталась - на ней держится разнос покупок во
+/// времени и правило «одна заявка спавна за раз». Лимит нужен по-прежнему:
+/// без него зритель, купивший сотым, получил бы своё через полчаса, когда уже
+/// забыл, за что платил.
+pub const QUEUE_LIMIT: usize = 20;
 
 #[derive(Default)]
 pub struct ActionState {
@@ -120,8 +131,8 @@ impl ActionState {
 
     /// Ставит покупку в очередь. `None` - взяли, `Some(pending)` - очередь
     /// полна, и это надо вернуть зрителю.
-    pub fn enqueue(&mut self, pending: Pending, limit: usize) -> Option<Pending> {
-        if self.queue.len() >= limit.max(1) {
+    pub fn enqueue(&mut self, pending: Pending) -> Option<Pending> {
+        if self.queue.len() >= QUEUE_LIMIT {
             return Some(pending);
         }
         self.queue.push_back(pending);
@@ -181,6 +192,41 @@ impl ActionState {
     pub fn drain_queue(&mut self) -> Vec<Pending> {
         self.busy_until = None;
         self.queue.drain(..).collect()
+    }
+
+    /// Нужна ли ближайшей покупке настоящая клавиатура.
+    ///
+    /// Клавишу можно нажать только когда игра - активное окно и её ввод не
+    /// забрало наше же окно настроек. Спавну и эффекту ни то, ни другое не
+    /// мешает: они пишут память напрямую. Поэтому очередь двигается по разным
+    /// условиям в зависимости от того, что стоит первым.
+    pub fn head_needs_keyboard(&self) -> bool {
+        self.queue.front().is_some_and(|p| {
+            matches!(
+                p.action,
+                super::rewards::Action::Press { .. } | super::rewards::Action::Hold { .. }
+            )
+        })
+    }
+
+    /// Выкинуть из очереди только те покупки, которым нужна клавиатура.
+    ///
+    /// Зовётся, когда игра перестала быть активным окном: держать их до
+    /// возвращения значит исполнить неизвестно когда, а спавны и эффекты
+    /// в очереди при этом не при чём и остаются.
+    pub fn drain_keys(&mut self) -> Vec<Pending> {
+        let mut out = Vec::new();
+        self.queue.retain(|p| {
+            let key = matches!(
+                p.action,
+                super::rewards::Action::Press { .. } | super::rewards::Action::Hold { .. }
+            );
+            if key {
+                out.push(p.clone());
+            }
+            !key
+        });
+        out
     }
 }
 
@@ -244,8 +290,8 @@ mod tests {
         use super::super::rewards::Action;
         let mut s = ActionState::default();
         let now = Instant::now();
-        assert!(s.enqueue(pending(Action::Press { key: Key::Space }), 5).is_none());
-        assert!(s.enqueue(pending(Action::Press { key: Key::W }), 5).is_none());
+        assert!(s.enqueue(pending(Action::Press { key: Key::Space })).is_none());
+        assert!(s.enqueue(pending(Action::Press { key: Key::W })).is_none());
         assert_eq!(s.queue.len(), 2);
 
         assert!(s.advance(now).is_some(), "первое пошло сразу");
@@ -263,11 +309,11 @@ mod tests {
     fn queue_has_a_limit() {
         use super::super::rewards::Action;
         let mut s = ActionState::default();
-        for _ in 0..3 {
-            assert!(s.enqueue(pending(Action::Press { key: Key::Space }), 3).is_none());
+        for _ in 0..QUEUE_LIMIT {
+            assert!(s.enqueue(pending(Action::Press { key: Key::Space })).is_none());
         }
-        let rejected = s.enqueue(pending(Action::Press { key: Key::Space }), 3);
-        assert!(rejected.is_some(), "четвёртая при лимите 3 отклонена");
+        let rejected = s.enqueue(pending(Action::Press { key: Key::Space }));
+        assert!(rejected.is_some(), "покупка сверх лимита отклонена");
         assert_eq!(rejected.unwrap().redemption_id, "rd");
     }
 
@@ -277,8 +323,8 @@ mod tests {
     fn draining_returns_unspent_purchases() {
         use super::super::rewards::Action;
         let mut s = ActionState::default();
-        s.enqueue(pending(Action::Press { key: Key::Space }), 5);
-        s.enqueue(pending(Action::Press { key: Key::W }), 5);
+        s.enqueue(pending(Action::Press { key: Key::Space }));
+        s.enqueue(pending(Action::Press { key: Key::W }));
         let left = s.drain_queue();
         assert_eq!(left.len(), 2);
         assert_eq!(s.queue.len(), 0);
@@ -310,7 +356,7 @@ mod tests {
         use super::super::rewards::Action;
         let mut s = ActionState::default();
         let now = Instant::now();
-        s.enqueue(pending(Action::SpawnEnemy { key: "x", delay_secs: 0, cooldown_secs: 0 }), 5);
+        s.enqueue(pending(Action::SpawnEnemy { key: "x", delay_secs: 0, cooldown_secs: 0, ally: false, ttl_secs: 0 }));
         assert!(s.advance(now).is_some(), "заявка на спавн обязана уйти из очереди");
         assert!(s.held.is_empty(), "спавн не должен нажимать клавиши");
         assert!(s.advance(now).is_none(), "второе действие ждёт своего зазора");

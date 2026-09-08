@@ -86,6 +86,8 @@ pub struct Outcome {
     /// Прямо сейчас двигают положение карточки покупки - показать её на
     /// экране, чтобы было видно, куда она встанет.
     pub preview_toast: bool,
+    /// Двигают положение оверлея союзников - показать образец.
+    pub preview_ally: bool,
     /// Прямо сейчас тянут ползунок блока боя (имя босса, попытка, время):
     /// вне боя его на экране нет, и кегль настраивался бы вслепую.
     pub preview_fight: bool,
@@ -134,6 +136,7 @@ struct Ctx<'a> {
     audit_spawns: bool,
     clear_effects: bool,
     preview_toast: bool,
+    preview_ally: bool,
     preview_fight: bool,
     preview_tag: bool,
     preview_boss: bool,
@@ -332,6 +335,7 @@ pub fn draw(
         audit_spawns: false,
         clear_effects: false,
         preview_toast: false,
+        preview_ally: false,
         preview_fight: false,
         preview_tag: false,
         preview_boss: false,
@@ -438,6 +442,7 @@ pub fn draw(
         audit_spawns: x.audit_spawns,
         clear_effects: x.clear_effects,
         preview_toast: x.preview_toast,
+        preview_ally: x.preview_ally,
         preview_fight: x.preview_fight,
         preview_tag: x.preview_tag,
         preview_boss: x.preview_boss,
@@ -1067,7 +1072,8 @@ fn page_panel(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
     g.card(ui, p, t("What to show"), "боссы смерти на боссах уровень руны время карта ближайший bosses deaths level runes playtime map nearest", |_| {
         check(ui, &mut x.changes, t("Bosses"), "show_bosses", &mut x.c.show_bosses);
         check(ui, &mut x.changes, t("Progress bar"), "show_boss_bar", &mut x.c.show_boss_bar);
-        // Радиус у него общий со списком по F8 - там же и ползунок.
+        // Свой радиус, не общий с окном списка: там «что осталось в округе»,
+        // здесь «куда идти прямо сейчас».
         check(ui, &mut x.changes, t("Nearest boss"), "show_nearest_boss", &mut x.c.show_nearest_boss);
         if x.c.show_nearest_boss {
             slider(ui, &mut x.changes, t("Radius, m"), "nearest_radius", &mut x.c.nearest_radius, 50.0, 3000.0);
@@ -1118,6 +1124,7 @@ fn page_panel(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
     g.card(ui, p, t("Frame"), "корпус рамка фон полоса плитка яркость скругление радиус толщина chassis frame border bar radius width", |_| {
         chassis_picker(ui, CHASSIS_OVERLAY, x.c, &mut x.changes);
     });
+
 
     g.card(ui, p, t("Position"), "положение позиция координаты position", |w| {
         let accent = x.c.accent_color;
@@ -1846,16 +1853,11 @@ fn page_rewards(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
         g.alpha *= LOCKED_ALPHA;
     }
 
-    g.card(ui, p, t("Purchase queue"), "очередь кулдаун пауза возврат queue cooldown refund", |_| {
-        int_slider(ui, &mut x.changes, t("Queue length"), "action_queue_limit", &mut x.c.action_queue_limit, 1, 100);
-        // Перезарядка теперь одна и живёт у самой награды (её ползунок - в
-        // редакторе). Прежние «паузы на зрителя» по категориям были тем же
-        // самым с другой стороны и удалены как дубль.
-        hint(ui, t("A reward's own cooldown is set in its card."));
-        ui.dummy([1.0, 3.0 * x.k]);
-        hint(ui, t("Points are refunded when: the queue is full, the reward is on cooldown, the game is in a menu, a cutscene or a loading screen, the game window is not focused, or the action never happened."));
-        ui.dummy([1.0, 5.0 * x.k]);
-        group(ui, x.c, t("ON TWITCH"));
+    // Плитка «Очередь покупок» удалена по запросу 2026-09-08. Сама очередь
+    // осталась: на ней держится разнос покупок во времени и правило «одна
+    // заявка спавна за раз». Настраивать в ней было нечего - длину теперь
+    // задаёт константа `actions::QUEUE_LIMIT`.
+    g.card(ui, p, t("On Twitch"), "твич награды включить выключить twitch rewards on off", |_| {
         if button(ui, t("Turn all off")) {
             x.enable_all_rewards = Some(false);
         }
@@ -1864,15 +1866,53 @@ fn page_rewards(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
             x.enable_all_rewards = Some(true);
         }
         hint(ui, t("Connecting to Twitch turns the mod's own rewards back on."));
+        ui.dummy([1.0, 3.0 * x.k]);
+        hint(ui, t("Points are refunded when: the reward is on cooldown, the game is in a menu, a cutscene or a loading screen, the game window is not focused, or the action never happened."));
+    });
+
+    // Живёт в «Наградах», а не в «Панели»: настраивают его вместе со спавном,
+    // ради которого он и существует (запрос 2026-09-08).
+    g.card(ui, p, t("Allies"), "союзник союзники призыв здоровье ally allies summon health", |w| {
+        check(ui, &mut x.changes, t("Show allies"), "show_allies", &mut x.c.show_allies);
+        if !x.c.show_allies {
+            return;
+        }
+        let before = x.changes.len();
+        let accent = x.c.accent_color;
+        let (dragging, released) =
+            crate::overlay::xy_pad(ui, "##ally_xy", &mut x.c.ally_x, &mut x.c.ally_y, accent, x.drag, w);
+        if released {
+            x.changes.push(("ally_x", x.c.ally_x.to_string()));
+            x.changes.push(("ally_y", x.c.ally_y.to_string()));
+        }
+        hint(ui, t("Drag the dot. Shift - one axis only."));
+        slider(ui, &mut x.changes, t("Horizontal"), "ally_x", &mut x.c.ally_x, 0.0, 3840.0);
+        let x_active = ui.is_item_active();
+        slider(ui, &mut x.changes, t("Vertical"), "ally_y", &mut x.c.ally_y, 0.0, 2160.0);
+        // Пока двигают - рисуем образец на его месте: союзников в мире может не
+        // быть вовсе, а положение выставляют заранее. Штамп времени, а не флаг:
+        // у галочки «тянут» не бывает, и образец мелькнул бы на один кадр - тот
+        // же приём, что у карточки покупки.
+        if dragging || x_active || ui.is_item_active() || x.changes.len() != before {
+            *ALLY_PREVIEW_UNTIL.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(std::time::Instant::now() + TOAST_PREVIEW_LINGER);
+        }
+        x.preview_ally = ALLY_PREVIEW_UNTIL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|until| until > std::time::Instant::now());
     });
 
     g.card(ui, p, t("Enemy spawns"), "спавн враг лимит радиус жизнь spawn enemy limit radius ttl", |_| {
-        int_slider(ui, &mut x.changes, t("Alive at once"), "spawn_limit", &mut x.c.spawn_limit, 1, 50);
-        int_slider(ui, &mut x.changes, t("Same enemy"), "spawn_same_limit", &mut x.c.spawn_same_limit, 1, 50);
-        slider(ui, &mut x.changes, t("Lifetime, s"), "spawn_ttl_secs", &mut x.c.spawn_ttl_secs, 5.0, 1800.0);
+        // Общий потолок нужен только отладочному спавну: пепел и так не пускает
+        // в мир больше своих пяти, и ползунок до полусотни там ничего не значит.
+        if x.c.debug_spawn {
+            int_slider(ui, &mut x.changes, t("Max summoned"), "spawn_limit", &mut x.c.spawn_limit, 1, 50);
+        }
         slider(ui, &mut x.changes, t("Distance, m"), "spawn_radius_m", &mut x.c.spawn_radius_m, 2.0, 60.0);
         check(ui, &mut x.changes, t("Ahead of the camera"), "spawn_in_front", &mut x.c.spawn_in_front);
-        check(ui, &mut x.changes, t("Not during a boss fight"), "spawn_block_in_boss", &mut x.c.spawn_block_in_boss);
+        check(ui, &mut x.changes, t("Spawn enemies during a boss fight"), "spawn_in_boss", &mut x.c.spawn_in_boss);
+        check(ui, &mut x.changes, t("Spawn allies during a boss fight"), "ally_spawn_in_boss", &mut x.c.ally_spawn_in_boss);
         hint(ui, t("Which enemy - picked per reward."));
         ui.dummy([1.0, 3.0 * x.k]);
         // Единственный признак, что спавн вообще происходит: лога в моде нет,
@@ -1889,6 +1929,11 @@ fn page_rewards(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
         // как «награда иногда не даёт этого врага».
         if button(ui, t("Check the list")) {
             x.audit_spawns = true;
+        }
+        // ponytail: временная диагностика, удалить вместе с остальной. Без
+        // `t()` намеренно: это отладочная строка, а не подпись интерфейса.
+        if let Some(raw) = crate::spawn::last_candle() {
+            hint(ui, &format!("candle: {raw}"));
         }
         if crate::spawn::rays_off() {
             hint(ui, t("placement rays crashed the game last run - off for this session"));
@@ -2525,6 +2570,17 @@ fn reward_action(ui: &Ui, x: &mut Ctx, index: usize, inner: f32) {
         Action::SpawnEnemy { cooldown_secs, .. } => cooldown_secs,
         _ => 0,
     };
+    let mut spawn_ally = match current {
+        Action::SpawnEnemy { ally, .. } => ally,
+        _ => false,
+    };
+    // Ноль - срок не выставляли, и умолчание тогда своё у союзника и у врага.
+    // Ноль и остаётся в награде, пока ползунок не трогали: иначе галочка
+    // «союзник» не меняла бы срок, потому что число уже записано.
+    let mut spawn_ttl = match current {
+        Action::SpawnEnemy { ttl_secs, .. } => ttl_secs,
+        _ => 0,
+    };
     let first_effect = crate::effects::EFFECT_TABLE.first().map(|e| e.key).unwrap_or("");
     let mut effect_key: &'static str = match current {
         Action::Effect { key, .. } => key,
@@ -2725,6 +2781,13 @@ fn reward_action(ui: &Ui, x: &mut Ctx, index: usize, inner: f32) {
             ui.text_colored(accent, clip_to(ui, &crate::spawn::label(spawn_key), w));
             ui.dummy([1.0, 8.0 * k]);
 
+            // Меняет не тайминг, а смысл награды целиком, поэтому стоит первой.
+            if ui.checkbox(t("Ally###rspawnally"), &mut spawn_ally) {
+                applied = true;
+                touched = true;
+            }
+            ui.dummy([1.0, 4.0 * k]);
+
             // Значение применяется КАЖДЫЙ кадр, а в файл уходит по отпусканию.
             // Иначе ползунок «убегает в ноль» (жалоба 2026-08-20): пока его
             // тянут, локальная переменная пересоздаётся из ещё не изменённого
@@ -2746,6 +2809,20 @@ fn reward_action(ui: &Ui, x: &mut Ctx, index: usize, inner: f32) {
             ui.set_next_item_width(w);
             if ui.slider_config("###rspawncd", 0.0, 1800.0).display_format("%.0f").build(&mut cd) {
                 spawn_cooldown = cd as u16;
+                applied = true;
+            }
+            touched |= ui.is_item_deactivated_after_edit();
+
+            ui.dummy([1.0, 4.0 * k]);
+            // Своё у каждой награды: «медведь на минуту» и «Маления на десять
+            // секунд» - разные покупки за разные деньги. Общей настройки
+            // больше нет (запрос 2026-09-07).
+            ui.text_disabled(clip_to(ui, t("Lifetime, s"), w));
+            let mut ttl =
+                f32::from(if spawn_ttl == 0 { rewards::default_ttl_secs(spawn_ally) } else { spawn_ttl });
+            ui.set_next_item_width(w);
+            if ui.slider_config("###rspawnttl", 5.0, 1800.0).display_format("%.0f").build(&mut ttl) {
+                spawn_ttl = ttl as u16;
                 applied = true;
             }
             touched |= ui.is_item_deactivated_after_edit();
@@ -2855,6 +2932,8 @@ fn reward_action(ui: &Ui, x: &mut Ctx, index: usize, inner: f32) {
                 key: spawn_key,
                 delay_secs: spawn_delay,
                 cooldown_secs: spawn_cooldown,
+                ally: spawn_ally,
+                ttl_secs: spawn_ttl,
             },
             Kind::Effect => Action::Effect {
                 key: effect_key,
@@ -2980,7 +3059,7 @@ fn auto_title(action: &Action) -> String {
     match action {
         Action::Press { key } => format!("{} {}", t("Tap"), rewards::key_label(*key)),
         Action::Hold { key, .. } => format!("{} {}", t("Hold"), rewards::key_label(*key)),
-        Action::SpawnEnemy { key, .. } => spawn_title(key),
+        Action::SpawnEnemy { key, ally, .. } => spawn_title(key, *ally),
         Action::Effect { key, .. } => crate::effects::label(key),
     }
 }
@@ -2989,11 +3068,21 @@ fn auto_title(action: &Action) -> String {
 ///
 /// У «случайных» подпись уже сама себе название - «Спавн Случайный враг»
 /// читалось бы как опечатка.
-fn spawn_title(key: &str) -> String {
-    if crate::spawn::random_pick(key).is_some() {
-        return crate::spawn::label(key);
+fn spawn_title(key: &str, ally: bool) -> String {
+    let label = crate::spawn::label(key);
+    // Через тире, а не «Союзник Маления»: имя в родительном падеже читалось бы
+    // как «чей-то союзник». Приставка нужна и «случайному» тоже - без неё две
+    // награды на одного зверя назывались бы одинаково, а Twitch требует
+    // уникальных названий.
+    if ally {
+        return format!("{} - {label}", t("Ally"));
     }
-    format!("{} {}", t("Spawn"), crate::spawn::label(key))
+    // У «случайного» подпись уже готовое название («Случайный босс»), и
+    // «Спавн Случайный босс» читалось бы косо.
+    if crate::spawn::random_pick(key).is_some() {
+        return label;
+    }
+    format!("{} {label}", t("Spawn"))
 }
 
 /// Что эффект делает, человеческим языком. Пусто - название говорит само за
@@ -3063,8 +3152,9 @@ fn describe(action: &Action) -> String {
             *duration_ms as f32 / 1000.0,
             t("s")
         ),
-        Action::SpawnEnemy { key, delay_secs, cooldown_secs } => {
-            let mut what = format!("{} {}", t("spawn"), crate::spawn::label(key));
+        Action::SpawnEnemy { key, delay_secs, cooldown_secs, ally, .. } => {
+            let verb = if *ally { t("ally") } else { t("spawn") };
+            let mut what = format!("{verb} {}", crate::spawn::label(key));
             if *delay_secs > 0 {
                 what.push_str(&format!(", {} {delay_secs} {}", t("in"), t("s")));
             }
@@ -3138,10 +3228,14 @@ fn page_other(ui: &Ui, g: &mut Grid, x: &mut Ctx) {
         if learned > 0 && button(ui, t("Forget the names")) {
             crate::bosses::forget_learned();
         }
-        slider(ui, &mut x.changes, t("Radius, m"), "boss_list_radius", &mut x.c.boss_list_radius, 200.0, 8000.0);
     });
 
-    g.card(ui, p, t("Diagnostics"), "отладка диагностика debug", |_| {
+    g.card(ui, p, t("Summons"), "призванные спавн дебаг summons debug spawn", |_| {
+        check(ui, &mut x.changes, t("Debug spawner"), "debug_spawn", &mut x.c.debug_spawn);
+        hint(ui, t("No limit on how many enemies can be in the world. They do not follow you and may come out invisible. Allies always come through the ash."));
+    });
+
+    g.card(ui, p, t("Diagnostics"), "отладка диагностика debug spawn", |_| {
         check(ui, &mut x.changes, t("Debug window"), "debug", &mut x.c.debug);
     });
 }
@@ -3156,7 +3250,8 @@ pub fn toggle_boss_list() {
 ///
 /// Данные тянутся из `bosses::rows()` - он сам не чаще раза в секунду ходит в
 /// парамы, поэтому звать его каждый кадр можно.
-pub fn boss_list_window(ui: &Ui, c: &Config) {
+pub fn boss_list_window(ui: &Ui, c: &mut Config) -> Changes {
+    let mut changes = Changes::new();
     // Появление и уход - как у окна редактора наград: вниз быстрее, чем вверх.
     let open = BOSS_LIST_OPEN.load(Ordering::Relaxed);
     let dt = ui.io().delta_time.clamp(0.0, 0.1);
@@ -3167,7 +3262,7 @@ pub fn boss_list_window(ui: &Ui, c: &Config) {
         *slot
     };
     if fade < 0.01 {
-        return;
+        return changes;
     }
 
     let k = scale(ui);
@@ -3211,6 +3306,26 @@ pub fn boss_list_window(ui: &Ui, c: &Config) {
             let mut only = here_only;
             if ui.checkbox(t("Nearby"), &mut only) {
                 BOSS_LIST_HERE.store(only, Ordering::Relaxed);
+            }
+            // Ползунок радиуса стоит тут, а не в настройках: он настраивает
+            // ровно эту галочку, и крутить его надо глядя на результат
+            // (запрос 2026-09-07). `rows()` держит радиус в условии кэша,
+            // поэтому список отвечает сразу, а не через секунду.
+            //
+            // Показывается только при включённой галочке: без неё радиус ни на
+            // что не влияет, а строка фильтров и так впритык по ширине.
+            if only {
+                ui.same_line();
+                ui.set_next_item_width(80.0 * k);
+                ui.slider_config("###blradius", 200.0, 8000.0)
+                    .display_format(step_of(8000.0))
+                    .build(&mut c.boss_list_radius);
+                if ui.is_item_hovered() {
+                    ui.tooltip_text(t("Radius, m"));
+                }
+                if ui.is_item_deactivated_after_edit() {
+                    changes.push(("boss_list_radius", format!("{}", c.boss_list_radius)));
+                }
             }
             ui.same_line();
             let mut killed = show_killed;
@@ -3398,6 +3513,7 @@ pub fn boss_list_window(ui: &Ui, c: &Config) {
     if pushed {
         unsafe { hudhook::imgui::sys::igPopFont() };
     }
+    changes
 }
 
 fn boss_group_folded(place: &str) -> bool {
@@ -3566,14 +3682,26 @@ fn labeled(ui: &Ui, label: &str, key: &str) -> (String, f32) {
     // Ползунок уже трети плитки мышью не поймать, поэтому место ему уступает
     // подпись, а не наоборот.
     let min_ctrl = (full * 0.4).max(48.0);
-    let shown = clip_to(ui, label, (full - min_ctrl - gap).max(24.0));
-    let ctrl = (full - ui.calc_text_size(&shown)[0] - gap).max(min_ctrl);
-    (format!("{shown}###{key}"), ctrl)
+    let room = (full - min_ctrl - gap).max(24.0);
+    if ui.calc_text_size(label)[0] <= room {
+        let ctrl = (full - ui.calc_text_size(label)[0] - gap).max(min_ctrl);
+        return (format!("{label}###{key}"), ctrl);
+    }
+    // Не влезла - переносим по словам НАД виджетом, а виджет занимает всю
+    // ширину. Раньше лишнее резалось многоточием, и длинную подпись нельзя
+    // было прочитать вовсе (жалоба со скриншотом 2026-09-08).
+    //
+    // Границу переноса ставит сама плитка (`Grid`), поэтому `text_wrapped`
+    // здесь заворачивает по её краю, а не по краю окна.
+    ui.text_wrapped(label);
+    (format!("###{key}"), full)
 }
 
 /// Докуда показывать образец карточки покупки. Клик по радиокнопке корпуса -
 /// событие на один кадр, и без этого образец мелькнул бы и пропал.
 static TOAST_PREVIEW_UNTIL: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// То же самое для оверлея союзников.
+static ALLY_PREVIEW_UNTIL: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 const TOAST_PREVIEW_LINGER: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// Подпись группы внутри плитки: акцентом и линейкой под ней - тот же язык,
@@ -3644,10 +3772,20 @@ fn status_pill(ui: &Ui, text: &str, color: [f32; 4], k: f32) {
 /// плитки - и обрезается по нему.
 fn check(ui: &Ui, changes: &mut Changes, label: &str, key: &'static str, v: &mut bool) {
     let room = (ui.calc_item_width() - ui.frame_height() - 10.0).max(24.0);
-    let shown = clip_to(ui, label, room);
-    if ui.checkbox(format!("{shown}###{key}"), v) {
+    if ui.calc_text_size(label)[0] <= room {
+        if ui.checkbox(format!("{label}###{key}"), v) {
+            changes.push((key, v.to_string()));
+        }
+        return;
+    }
+    // Длинная подпись переносится по словам рядом с квадратиком. Кликается
+    // тогда только сам квадратик - у галочки ImGui подпись часть виджета, и
+    // отделить её без потери клика нечем.
+    if ui.checkbox(format!("###{key}"), v) {
         changes.push((key, v.to_string()));
     }
+    ui.same_line();
+    ui.text_wrapped(label);
 }
 
 /// Шаг ползунка. ImGui округляет значение по формату вывода
@@ -3809,6 +3947,8 @@ mod tests {
             key: crate::spawn::SPAWN_TABLE[0].key,
             delay_secs: 0,
             cooldown_secs: 0,
+            ally: false,
+            ttl_secs: 0,
         };
         let effect = Action::Effect {
             key: crate::effects::EFFECT_TABLE[0].key,
@@ -3927,6 +4067,8 @@ mod tests {
                             key: crate::spawn::SPAWN_TABLE[0].key,
                             delay_secs: 3,
                             cooldown_secs: 60,
+                            ally: false,
+                            ttl_secs: 0,
                         },
                         cost: 500,
                         reward_id: "abc".into(),
@@ -4001,6 +4143,7 @@ mod tests {
                     audit_spawns: false,
                     clear_effects: false,
                     preview_toast: false,
+                    preview_ally: false,
                     preview_fight: false,
                     preview_tag: false,
                     preview_boss: false,

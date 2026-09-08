@@ -579,6 +579,35 @@ fn draw_progress(dl: DrawList, x: f32, y: f32, w: f32, h: f32, ratio: f32, c: &C
     stroke_rect(dl, [x, y], [x + w, y + h], with_alpha(c.accent_color, 0.35), r, 1.0);
 }
 
+/// Полоска здоровья союзника - в языке самой игры, а не панели.
+///
+/// Прямоугольная, красная, с «хвостом урона»: снятое только что остаётся
+/// бледной полосой позади красной и стекает с задержкой (запрос 2026-09-08).
+/// Скругления нет намеренно - у полосок игры его тоже нет, а ImGui на узком
+/// прямоугольнике всё равно схлопывает радиус в ноль и уходит на сглаженный
+/// путь, где тонкая заливка теряет по полпикселя с каждой стороны.
+///
+/// Цвета здесь литералами, а не из темы: это цитата чужого интерфейса, и
+/// золото панели ей ни к чему.
+fn draw_hp_bar(dl: DrawList, x: f32, y: f32, w: f32, h: f32, hp: f32, lag: f32, c: &Config) {
+    const BACK: [f32; 4] = [0.05, 0.04, 0.03, 0.85];
+    const FILL: [f32; 4] = [0.60, 0.11, 0.10, 1.0];
+    const TAIL: [f32; 4] = [0.85, 0.78, 0.60, 0.95];
+
+    let hp_w = w * hp.clamp(0.0, 1.0);
+    let lag_w = w * lag.clamp(0.0, 1.0);
+    fill_rect(dl, [x, y], [x + w, y + h], BACK, 0.0);
+    // Хвост рисуется ПЕРВЫМ и на всю свою длину, красное ложится поверх:
+    // так между ними не остаётся щели в полпикселя на дробных ширинах.
+    if lag_w > hp_w + 0.5 {
+        fill_rect(dl, [x, y], [x + lag_w, y + h], TAIL, 0.0);
+    }
+    if hp_w > 0.5 {
+        fill_rect(dl, [x, y], [x + hp_w, y + h], FILL, 0.0);
+    }
+    stroke_rect(dl, [x, y], [x + w, y + h], with_alpha(c.label_color, 0.45), 0.0, 1.0);
+}
+
 /// Волосяная линия, самая яркая в середине и гаснущая к обоим краям. Две
 /// половины, потому что `gradient_h` умеет только одно направление.
 fn draw_divider(dl: DrawList, x: f32, y: f32, w: f32, color: [f32; 4]) {
@@ -839,21 +868,19 @@ pub fn draw_debug(ui: &Ui, s: &Snapshot, frames: u64, suppressed: bool, probe: V
         .build(|| {
             // Живо ли вообще чтение памяти. Всё остальное имеет смысл только
             // при `valid`, поэтому строка ровно одна и стоит первой.
-            ui.text_colored(
-                if s.valid { HEAD } else { [0.9, 0.4, 0.35, 1.0] },
-                format!(
-                    "valid {} | кадр {frames} | панель {}",
-                    s.valid,
-                    if suppressed { "скрыта" } else { "видна" }
-                ),
+            let head = format!(
+                "valid {} | кадр {frames} | панель {}",
+                s.valid,
+                if suppressed { "скрыта" } else { "видна" }
             );
-            ui.text_colored(DIM, format!("боссы {}/{}", s.bosses_all.0, s.bosses_all.1));
+            ui.text_colored(if s.valid { HEAD } else { [0.9, 0.4, 0.35, 1.0] }, &head);
             // Диагностику присылают скриншотом, а числа с него перенабирают
             // руками. Кнопка кладёт то же самое текстом.
             ui.same_line();
             if ui.small_button("копировать") {
-                ui.set_clipboard_text(probe.join("
-"));
+                ui.set_clipboard_text(format!("{head}
+{}", probe.join("
+")));
             }
 
             // Дальше - то, что сейчас исследуется. Строки приходят готовыми из
@@ -1396,6 +1423,113 @@ pub fn draw_purchase_toasts(ui: &Ui, events: &[crate::twitch::PurchaseEvent], c:
 
         y += size[1] + gap;
     }
+    set_alpha(restore);
+}
+
+/// Оверлей союзников: кто прислал, кого прислал, здоровье и остаток жизни.
+///
+/// **Своя отрисовка, а не список пеплов праха слева.** Запись в
+/// `FrontEndViewValues::spirit_ash_display` пробовали живьём 2026-09-07 и на
+/// экране не появилось ничего: буфер забирает scaleform раньше, чем мод
+/// доходит до `Present`. Та же стена, что была с `CSCamera::pers_cam_1.fov`.
+///
+/// Своим окном на своей позиции - как карточки покупок, и по той же причине:
+/// это отдельный источник, который двигают отдельно от панели.
+pub fn draw_allies(ui: &Ui, allies: &[crate::spawn::AllyView], c: &Config) {
+    if allies.is_empty() {
+        return;
+    }
+    // Своя прозрачность, и общую надо вернуть - иначе она утекает на всё, что
+    // рисуется дальше в этом кадре. Ровно так же делают подписи врагов и
+    // карточки покупок.
+    let restore = f32::from_bits(HUD_ALPHA_BITS.load(Ordering::Relaxed));
+    set_alpha(1.0);
+    let font = font_at(0);
+    let em = c.value_size.max(c.label_size);
+    let pad = [em * 0.75, em * 0.45];
+    let row_gap = em * 0.45;
+    // Заметно толще панельной полоски прогресса: у игры она плотная, и на
+    // тонкой линии «хвост урона» не читался бы вовсе.
+    let bar_h = (em * 0.45).max(5.0);
+    let bar_gap = em * 0.22;
+    let screen = ui.io().display_size;
+
+    // Ширина по самой длинной строке, но не уже разумного: полоска здоровья в
+    // тридцать пикселей не читается вовсе.
+    let mut inner = 120.0f32;
+    let rows: Vec<(String, String, (f32, f32))> = allies
+        .iter()
+        .map(|a| {
+            let who = clip(&a.viewer, 14);
+            let who = if who.is_empty() { a.name.clone() } else { format!("{who} - {}", a.name) };
+            let left = format!("{:.0} {}", a.secs_left.max(0.0).ceil(), crate::i18n::t("s"));
+            let w = tracked_width(font, c.label_size, c.tracking, &who)
+                + measure_text(font, c.label_size, &left)[0]
+                + em * 0.8;
+            inner = inner.max(w);
+            (who, left, (a.hp as f32 / a.max_hp.max(1) as f32, a.lag))
+        })
+        .collect();
+
+    let line_h = em + bar_gap + bar_h;
+    let size = [
+        inner + pad[0] * 2.0,
+        rows.len() as f32 * line_h + (rows.len().saturating_sub(1)) as f32 * row_gap + pad[1] * 2.0,
+    ];
+    // Прижимаем к экрану, как панель и карточки: дефолт задан для 1080p.
+    let pos = [
+        c.ally_x.min(screen[0] - size[0]).max(0.0),
+        c.ally_y.min(screen[1] - size[1]).max(0.0),
+    ];
+
+    let style = ui.push_style_var(StyleVar::ItemSpacing([0.0, 0.0]));
+    let padding = ui.push_style_var(StyleVar::WindowPadding(pad));
+    let bg = ui.push_style_color(hudhook::imgui::StyleColor::WindowBg, [0.0, 0.0, 0.0, 0.0]);
+    let border = ui.push_style_var(StyleVar::WindowBorderSize(0.0));
+    ui.window("##allies")
+        .position(pos, Condition::Always)
+        .size(size, Condition::Always)
+        .no_decoration()
+        .no_inputs()
+        .movable(false)
+        .focus_on_appearing(false)
+        .bring_to_front_on_focus(false)
+        .build(|| {
+            let dl = window_draw_list();
+            let at = ui.window_pos();
+            draw_panel_chrome(dl, at, ui.window_size(), c);
+            // Текст от фактического положения окна: ImGui вправе его подвинуть.
+            let x = at[0] + pad[0];
+            let right = at[0] + ui.window_size()[0] - pad[0];
+            let mut y = at[1] + pad[1];
+            for (who, left, ratio) in &rows {
+                let base = row_baseline(font, y, &[c.label_size]);
+                text_tracked(
+                    dl,
+                    font,
+                    [x, top_for_baseline(font, c.label_size, base)],
+                    c.label_color,
+                    c.label_size,
+                    c.tracking,
+                    who,
+                );
+                let lw = measure_text(font, c.label_size, left)[0];
+                text_shadowed(
+                    dl,
+                    font,
+                    [right - lw, top_for_baseline(font, c.label_size, base)],
+                    c.accent_color,
+                    c.label_size,
+                    left,
+                );
+                draw_hp_bar(dl, x, y + em + bar_gap, right - x, bar_h, ratio.0, ratio.1, c);
+                y += line_h + row_gap;
+            }
+        });
+    border.end();
+    bg.end();
+    padding.end();
+    style.end();
     set_alpha(restore);
 }
 

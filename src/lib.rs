@@ -114,6 +114,8 @@ struct StreamHud {
     effects: effects::EffectState,
     /// Двигают ручку положения карточки покупки - показать образец на экране.
     preview_toast: bool,
+    /// Двигают положение оверлея союзников - показать образец.
+    preview_ally: bool,
     /// Тянут ползунок блока боя - подставить образец боя в оба вывода.
     preview_fight: bool,
     /// Тянут ползунок подписи над врагом - показать образец в центре экрана.
@@ -130,6 +132,10 @@ struct StreamHud {
     /// прошлому кадру: покупки вычерпываются до `collect`, а нажимать клавиши
     /// в инвентаре нельзя - это выбросит предмет вместо шага вперёд.
     gameplay_active: bool,
+    /// Игра в мире: не меню, не катсцена, не загрузка. Достаточно для спавна и
+    /// эффектов - они пишут память, и им не мешают ни чужое активное окно, ни
+    /// наше окно настроек.
+    world_active: bool,
     /// Был ли игрок мёртв в прошлом кадре - смерть снимает эффекты по фронту.
     was_dead: bool,
     /// Когда зритель последний раз помешал играть: нажал клавишу или включил
@@ -238,10 +244,12 @@ impl StreamHud {
             boss_fight_now: false,
             in_hub_now: false,
             preview_toast: false,
+            preview_ally: false,
             preview_fight: false,
             preview_tag: false,
             preview_boss: false,
             gameplay_active: false,
+            world_active: false,
             was_dead: false,
             viewer_meddled_at: None,
             pending_test: None,
@@ -581,12 +589,18 @@ impl StreamHud {
             return;
         };
 
-        // Не в игре - меню, катсцена, загрузка, открытое окно настроек или
-        // вообще другое окно на переднем плане. Клавишу тут нажимать нельзя (в
-        // инвентаре она выбросит предмет, а вне фокуса уйдёт в чужое
-        // приложение), а копить покупку до возвращения значит исполнить её
-        // неизвестно когда, когда зритель уже забыл, за что платил.
-        if !self.gameplay_active {
+        // Требования у покупок разные (запрос 2026-09-08).
+        //
+        // Клавише нужна настоящая клавиатура: в инвентаре она выбросит предмет,
+        // вне фокуса уйдёт в чужое приложение, а при открытом F7 её заберёт наш
+        // же детур. Спавну и эффекту хватает мира - они пишут игровую память, и
+        // им всё равно, какое окно на переднем плане.
+        //
+        // Копить покупку до возвращения нельзя: исполнится неизвестно когда,
+        // когда зритель уже забыл, за что платил.
+        let ready =
+            if entry.action.needs_keyboard() { self.gameplay_active } else { self.world_active };
+        if !ready {
             self.refund(&reward_id, &redemption_id);
             return;
         }
@@ -643,7 +657,7 @@ impl StreamHud {
         };
         // Очередь полна - возвращаем баллы сразу, а не копим покупки, до
         // которых дело дойдёт через минуту.
-        if let Some(rejected) = self.actions.enqueue(pending, self.config.action_queue_limit as usize) {
+        if let Some(rejected) = self.actions.enqueue(pending) {
             self.refund(&rejected.reward_id, &rejected.redemption_id);
             return;
         }
@@ -806,15 +820,19 @@ impl StreamHud {
         redemption_id: String,
         viewer: String,
     ) {
-        let twitch::rewards::Action::SpawnEnemy { key, .. } = action else { return };
-        // Время жизни одно на все спавны и живёт в «Спавне врагов»: своё поле
-        // у награды дублировало ту же настройку (жалоба 2026-09-03).
-        let ttl = Duration::from_secs_f32(self.config.spawn_ttl_secs.max(0.1));
+        let twitch::rewards::Action::SpawnEnemy { key, ally, .. } = action else { return };
+        // Срок теперь свой у каждой награды (запрос 2026-09-07): общая
+        // настройка из «Спавна врагов» убрана, дублировать больше нечего.
+        let ttl = Duration::from_secs(u64::from(action.spawn_ttl_secs()));
         let delay = Duration::from_secs(u64::from(action.spawn_delay()));
         // Бой с боссом: третий участник посреди попытки - это чаще испорченный
         // ран, чем веселье, поэтому решает стример. Проверяем до всего
         // остального - синглтон резолвить незачем.
-        if self.config.spawn_block_in_boss && self.boss_fight_now {
+        // Своя галочка у врага и у союзника: помощь в бою с боссом и помеха в
+        // нём - разные вещи, и решает их стример по отдельности.
+        let allowed_in_boss =
+            if ally { self.config.ally_spawn_in_boss } else { self.config.spawn_in_boss };
+        if !allowed_in_boss && self.boss_fight_now {
             self.reward_notice = Some(spawn::SpawnRejected::BossFight.reason());
             self.refund(&reward_id, &redemption_id);
             return;
@@ -825,10 +843,10 @@ impl StreamHud {
                 delay,
                 ttl,
                 self.config.spawn_limit,
-                self.config.spawn_same_limit,
                 &reward_id,
                 &redemption_id,
                 &viewer,
+                ally,
             );
         // Лимит, неподобранный param-id, нет игрока - за неисполненное
         // возвращаем баллы сразу, а не молча проглатываем покупку. Причину
@@ -1015,7 +1033,7 @@ mod purchase_upsert_tests {
         assert!(meddles_with_play(&effect("flask_lock")), "забрали фляги - помеха");
         assert!(!meddles_with_play(&effect("heal")), "лечение смерти не причина");
         assert!(
-            !meddles_with_play(&Action::SpawnEnemy { key: "x", delay_secs: 0, cooldown_secs: 0 }),
+            !meddles_with_play(&Action::SpawnEnemy { key: "x", delay_secs: 0, cooldown_secs: 0, ally: false, ttl_secs: 0 }),
             "спавн считается по тому, кто добил, а не по времени"
         );
     }
@@ -1400,19 +1418,32 @@ impl ImguiRenderLoop for StreamHud {
         self.boss_fight_now = snapshot.boss_fight_active;
         self.in_hub_now = snapshot.in_hub;
         let was_active = self.gameplay_active;
-        // `game_focused` - не придирка, а починка: `SendInput` бьёт по
-        // активному окну ВСЕЙ системы, и пока стример сидит в браузере,
-        // купленная зрителем клавиша печатается туда.
-        self.gameplay_active = snapshot.valid
-            && !snapshot.menu_open
-            && !snapshot.in_cutscene
-            && !self.settings_open
-            && input::game_focused();
+        let was_world = self.world_active;
+        // Два уровня, а не один (запрос 2026-09-08: «награды не работают, пока
+        // активно другое окно или открыто F7»).
+        //
+        // Спавну и эффекту нужен только мир: они пишут игровую память, и им
+        // всё равно, какое окно на переднем плане.
+        self.world_active = snapshot.valid && !snapshot.menu_open && !snapshot.in_cutscene;
+        // Клавише нужно больше. `game_focused` - не придирка, а починка:
+        // `SendInput` бьёт по активному окну ВСЕЙ системы, и пока стример сидит
+        // в браузере, купленная зрителем клавиша печатается туда. Открытое окно
+        // настроек тоже перекрывает: там ввод забирает наш же детур.
+        self.gameplay_active = self.world_active && !self.settings_open && input::game_focused();
         // Ушли из игры с зажатой клавишей - отпускаем немедленно, иначе она
         // останется нажатой во всей системе, а не только в игре.
         if was_active && !self.gameplay_active {
             self.actions.release_all();
-            // Ушли из игры - неисполненное вернуть зрителям, а не выбросить.
+            // Возвращаем баллы только за КЛАВИШИ: держать их до возвращения
+            // фокуса значит исполнить неизвестно когда. Спавны и эффекты в
+            // очереди при этом ни при чём и продолжают идти.
+            for left in self.actions.drain_keys() {
+                self.refund(&left.reward_id, &left.redemption_id);
+            }
+        }
+        // А вот уход из мира (меню, катсцена, загрузка) бросает всё: заявку
+        // спавна тикать больше некому.
+        if was_world && !self.world_active {
             for left in self.actions.drain_queue() {
                 self.refund(&left.reward_id, &left.redemption_id);
             }
@@ -1439,8 +1470,11 @@ impl ImguiRenderLoop for StreamHud {
             }
         }
         self.was_dead = snapshot.player_dead;
-        // Очередь двигается только в игре: в меню нажатия всё равно запрещены.
-        if self.gameplay_active {
+        // Очередь двигается по условию того, что стоит в ней первым: клавише
+        // нужна настоящая клавиатура, спавну и эффекту хватает мира.
+        let may_advance =
+            if self.actions.head_needs_keyboard() { self.gameplay_active } else { self.world_active };
+        if may_advance {
             if let Some(pending) = self.actions.advance(std::time::Instant::now()) {
                 if meddles_with_play(&pending.action) {
                     self.viewer_meddled_at = Some(std::time::Instant::now());
@@ -1462,15 +1496,20 @@ impl ImguiRenderLoop for StreamHud {
                     _ => self.fulfill(&pending.reward_id, &pending.redemption_id),
                 }
             }
-            // TTL/результат заявки - только если реально есть что тикать: не
-            // резолвим синглтон впустую, когда спавнов нет вовсе.
+        }
+        // Мировой тик спавна - про TTL, приговор и следование союзника, а не
+        // про очередь. Идёт всегда, пока есть мир: иначе заспавненные замирали
+        // бы на любое открытое меню настроек.
+        if self.world_active {
+            // Только если реально есть что тикать: не резолвим синглтон
+            // впустую, когда спавнов нет вовсе.
             if self.spawn.has_work() {
                 let (radius, limit) = (self.config.spawn_radius_m, self.config.spawn_limit);
                 let (refunds, done) = self.spawn.tick_world(
                     radius,
+                    self.config.debug_spawn,
                     self.config.spawn_in_front,
                     limit,
-                    self.config.spawn_same_limit,
                     std::time::Instant::now(),
                 );
                 for (rid, red) in refunds {
@@ -1486,7 +1525,9 @@ impl ImguiRenderLoop for StreamHud {
                 }
             }
         }
-        // Отложенная проверка ждёт, пока игра снова примет ввод.
+        // Отложенная проверка ждёт, пока игра снова примет ввод. Здесь именно
+        // `gameplay_active`: кнопка «Проверить» закрывает окно настроек ради
+        // клавиш, и ждать стоит того же.
         if self.gameplay_active {
             if let Some((action, id)) = self.pending_test.take() {
                 // Проверка открывает окно вины наравне с покупкой: иначе
@@ -1536,7 +1577,7 @@ impl ImguiRenderLoop for StreamHud {
         // видна она, а обычной панели нет, дело в наших данных или в ручной
         // отрисовке, а не в загрузке мода.
         if self.config.debug {
-            overlay::draw_debug(ui, &snapshot, self.frames, suppressed, msg::probe());
+            overlay::draw_debug(ui, &snapshot, self.frames, suppressed, self.spawn.probe());
         }
 
         // Окно настроек рисуется до всех проверок видимости и держит панель
@@ -1573,7 +1614,15 @@ impl ImguiRenderLoop for StreamHud {
         // Список боссов живёт отдельно от настроек: рисовать его только внутри
         // `settings::draw` значило бы, что F8 работает лишь при открытом F7 -
         // ровно на это и пожаловались (2026-08-27).
-        settings::boss_list_window(ui, &self.config);
+        // Окно списка правит только свой радиус, но правку надо донести до
+        // `.ini` тем же путём, что и настройки: иначе она жила бы до выхода.
+        let list_changes = settings::boss_list_window(ui, &mut self.config);
+        if !list_changes.is_empty() {
+            Config::save_values(self.hmodule, &list_changes);
+            if let Ok(mut sh) = self.shared.lock() {
+                sh.config = self.config.clone();
+            }
+        }
         if boss_list {
             input::hold_capture();
         }
@@ -1605,6 +1654,7 @@ impl ImguiRenderLoop for StreamHud {
             self.rewards = rewards;
 
             self.preview_toast = out.preview_toast;
+            self.preview_ally = out.preview_ally;
             self.preview_fight = out.preview_fight;
             self.preview_tag = out.preview_tag;
             self.preview_boss = out.preview_boss;
@@ -1848,6 +1898,21 @@ impl ImguiRenderLoop for StreamHud {
             overlay::draw(ui, &snapshot, &self.config);
         }
 
+        // Союзники рисуются НАРЯДУ с карточками покупок, а не внутри панели:
+        // за них заплачено, и в меню с катсценой они всё равно тикают по
+        // стенным часам - отсчёт, пропадающий на паузе, врал бы.
+        if self.config.show_allies {
+            let allies = self.spawn.allies();
+            if !allies.is_empty() {
+                overlay::draw_allies(ui, &allies, &self.config);
+            } else if self.preview_ally {
+                // Двигают ручку положения: показываем образец на её месте.
+                // Союзников в мире может не быть вовсе, а место выбирают
+                // заранее - тот же довод, что и у карточки покупки.
+                overlay::draw_allies(ui, &demo_allies(), &self.config);
+            }
+        }
+
         // Своя подпись - только если движок за неё не взялся.
         if !self.enemy_tags.is_empty() {
             overlay::draw_enemy_tags(ui, &self.enemy_tags, &self.config);
@@ -1894,6 +1959,21 @@ fn fade_out(age: f32, life_secs: f32) -> Option<f32> {
 ///
 /// Нужен ровно затем, чтобы ползунки «Имя босса» и «Попытка и время» было
 /// видно на что влияют: вне боя этих строк на панели нет вовсе.
+/// Образец для настройки положения оверлея союзников. Двое, чтобы было видно
+/// и высоту строки, и зазор между ними.
+fn demo_allies() -> Vec<spawn::AllyView> {
+    let row = |viewer: &str, name: &str, hp: u32, lag: f32, secs: f32| spawn::AllyView {
+        viewer: viewer.to_string(),
+        name: name.to_string(),
+        hp,
+        max_hp: 100,
+        lag,
+        secs_left: secs,
+    };
+    // У второго хвост урона длиннее здоровья - видно, как выглядит свежий удар.
+    vec![row("viewer", "Banished Knight", 72, 0.72, 148.0), row("chatter", "Wolf", 31, 0.55, 46.0)]
+}
+
 fn demo_fight(s: &mut stats::Snapshot) {
     s.boss_name = Some(i18n::t("Margit, the Fell Omen").to_string());
     s.attempts = s.attempts.max(3);

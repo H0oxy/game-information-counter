@@ -264,8 +264,6 @@ pub struct Config {
     pub toast_x: f32,
     pub toast_y: f32,
     /// Сколько покупок держим в очереди. Сверх этого баллы возвращаются: лучше
-    /// вернуть сразу, чем исполнить через минуту, когда зритель уже забыл.
-    pub action_queue_limit: u32,
     /// Завесу «для наград нужен Twitch» показали и её закрыли кнопкой. Раздел
     /// после этого не запирается никогда: подключение проверяет сам мод, а
     /// вид наград настраивают заранее.
@@ -334,15 +332,16 @@ pub struct Config {
     /// Сколько секунд висит карточка покупки.
     pub twitch_notify_secs: f32,
     /// Сколько заспавненных врагов может висеть в мире одновременно. Новая
-    /// покупка сверх лимита возвращается - тот же принцип, что у
-    /// `action_queue_limit`.
+    /// покупка сверх лимита возвращается, а не копится.
     pub spawn_limit: u32,
-    /// Сколько одинаковых врагов может висеть одновременно. Отдельно от
-    /// `spawn_limit`: трое импов - веселье, трое Малений - каша, в которой
-    /// не видно, за что заплатили.
-    pub spawn_same_limit: u32,
-    /// Через сколько секунд заспавненный враг убирается сам.
-    pub spawn_ttl_secs: f32,
+    pub debug_spawn: bool,
+
+    /// Показывать оверлей союзников: кто прислал, здоровье, остаток жизни.
+    pub show_allies: bool,
+    /// Положение этого оверлея. Своё, а не общее с панелью или карточками:
+    /// это третий источник, и в OBS его двигают отдельно от них.
+    pub ally_x: f32,
+    pub ally_y: f32,
     /// Как далеко от игрока появляется враг, метры игрового мира. В кольце -
     /// это его радиус, перед взглядом - расстояние по прямой.
     pub spawn_radius_m: f32,
@@ -353,10 +352,18 @@ pub struct Config {
     /// увидел за что. Направление берётся у камеры, а не у модели персонажа -
     /// «перед взглядом» это про то, куда смотрит зритель.
     pub spawn_in_front: bool,
-    /// Не спавнить, пока идёт бой с боссом. Подкидывать зрителям третьего
+    /// Разрешить спавн врага, пока идёт бой с боссом. Подкидывать третьего
     /// участника в бою на равных - это чаще про испорченную попытку, чем про
     /// веселье, поэтому решает стример.
-    pub spawn_block_in_boss: bool,
+    ///
+    /// Раньше это был `spawn_block_in_boss` с обратным смыслом (запрет).
+    /// Перевёрнуто по запросу 2026-09-08: галочка должна разрешать, а не
+    /// запрещать. Старый ключ читается с инверсией, чтобы уже настроенные
+    /// файлы не поменяли поведение молча.
+    pub spawn_in_boss: bool,
+    /// То же самое для призванных союзников. Отдельно от врага: помощь в бою с
+    /// боссом и помеха в нём - разные вещи.
+    pub ally_spawn_in_boss: bool,
 
     /// Открыть/закрыть окно настроек.
     pub settings_key: Key,
@@ -493,7 +500,6 @@ impl Default for Config {
             twitch_notify_hud: true,
             toast_x: 1520.0,
             toast_y: 24.0,
-            action_queue_limit: 5,
             rewards_notice_seen: false,
             twitch_channel: String::new(),
             secrets_plain: false,
@@ -520,11 +526,14 @@ impl Default for Config {
             enemy_tag_color: hex("E8D7A8"),
             twitch_notify_secs: 10.0,
             spawn_limit: 10,
-            spawn_same_limit: 5,
-            spawn_ttl_secs: 180.0,
+            debug_spawn: false,
+            show_allies: true,
+            ally_x: 24.0,
+            ally_y: 300.0,
             spawn_radius_m: 5.0,
             spawn_in_front: true,
-            spawn_block_in_boss: true,
+            spawn_in_boss: false,
+            ally_spawn_in_boss: true,
 
             // F5/F6 часто заняты другими модами - если такой загружен рядом,
             // обе клавиши срабатывали бы в двух окнах сразу.
@@ -694,7 +703,6 @@ impl Config {
                 "twitch_notify_hud" => set(&mut self.twitch_notify_hud, b()),
                 "toast_x" => set(&mut self.toast_x, f()),
                 "toast_y" => set(&mut self.toast_y, f()),
-                "action_queue_limit" => set(&mut self.action_queue_limit, value.parse().ok()),
                 "rewards_notice_seen" => set(&mut self.rewards_notice_seen, b()),
                 "twitch_channel" => self.twitch_channel = value.to_string(),
                 "show_viewer_kills" => set(&mut self.show_viewer_kills, b()),
@@ -717,11 +725,16 @@ impl Config {
                 "enemy_tag_color" => set(&mut self.enemy_tag_color, parse_color(value)),
                 "twitch_notify_secs" => set(&mut self.twitch_notify_secs, f()),
                 "spawn_limit" => set(&mut self.spawn_limit, value.parse().ok()),
-                "spawn_same_limit" => set(&mut self.spawn_same_limit, value.parse().ok()),
-                "spawn_ttl_secs" => set(&mut self.spawn_ttl_secs, f()),
+                "debug_spawn" => set(&mut self.debug_spawn, b()),
+                "show_allies" => set(&mut self.show_allies, b()),
+                "ally_x" => set(&mut self.ally_x, f()),
+                "ally_y" => set(&mut self.ally_y, f()),
                 "spawn_radius_m" => set(&mut self.spawn_radius_m, f()),
                 "spawn_in_front" => set(&mut self.spawn_in_front, b()),
-                "spawn_block_in_boss" => set(&mut self.spawn_block_in_boss, b()),
+                "spawn_in_boss" => set(&mut self.spawn_in_boss, b()),
+                "ally_spawn_in_boss" => set(&mut self.ally_spawn_in_boss, b()),
+                // Прежний ключ с обратным смыслом: `true` значило «запрещено».
+                "spawn_block_in_boss" => set(&mut self.spawn_in_boss, b().map(|v| !v)),
 
                 "settings_key" => set(&mut self.settings_key, parse_key(value)),
                 "boss_list_key" => set(&mut self.boss_list_key, parse_key(value)),
@@ -867,7 +880,6 @@ impl Config {
             ("twitch_notify_hud", self.twitch_notify_hud.to_string()),
             ("toast_x", self.toast_x.to_string()),
             ("toast_y", self.toast_y.to_string()),
-            ("action_queue_limit", self.action_queue_limit.to_string()),
             ("rewards_notice_seen", self.rewards_notice_seen.to_string()),
             ("twitch_channel", self.twitch_channel.clone()),
             ("show_viewer_kills", self.show_viewer_kills.to_string()),
@@ -890,11 +902,14 @@ impl Config {
             ("enemy_tag_color", color_to_hex(self.enemy_tag_color)),
             ("twitch_notify_secs", self.twitch_notify_secs.to_string()),
             ("spawn_limit", self.spawn_limit.to_string()),
-            ("spawn_same_limit", self.spawn_same_limit.to_string()),
-            ("spawn_ttl_secs", self.spawn_ttl_secs.to_string()),
+            ("debug_spawn", self.debug_spawn.to_string()),
+            ("show_allies", self.show_allies.to_string()),
+            ("ally_x", self.ally_x.to_string()),
+            ("ally_y", self.ally_y.to_string()),
             ("spawn_radius_m", self.spawn_radius_m.to_string()),
             ("spawn_in_front", self.spawn_in_front.to_string()),
-            ("spawn_block_in_boss", self.spawn_block_in_boss.to_string()),
+            ("spawn_in_boss", self.spawn_in_boss.to_string()),
+            ("ally_spawn_in_boss", self.ally_spawn_in_boss.to_string()),
             ("boss_list_radius", self.boss_list_radius.to_string()),
             ("nearest_radius", self.nearest_radius.to_string()),
         ]
@@ -1140,7 +1155,7 @@ overlay_enabled = true
 web_enabled = false
 web_port = 7777
 
-; Delay before the overlay is installed, ms. Raise it if the game hangs on
+; Wait before the overlay starts, ms. Raise it if the game hangs on
 ; startup, lower it if the HUD takes too long to appear.
 startup_delay_ms = 10000
 
@@ -1339,9 +1354,6 @@ twitch_client_id =
 ; No authorization needed for this - Twitch chat is read anonymously.
 twitch_channel =
 
-; How many purchases may wait in the queue. The rest are refunded.
-action_queue_limit = 5
-
 ; The "rewards need Twitch" notice was dismissed. Set to 0 to see it again.
 rewards_notice_seen = false
 
@@ -1361,12 +1373,17 @@ viewer_bots_extra =
 
 [spawn]
 
-; Enemy spawn rewards. Which enemy is picked per reward, in F7 -> Rewards.
+; How many spawned enemies may be in the world at once.
 spawn_limit = 10
-spawn_same_limit = 5
 
-; How long a spawned enemy lives, seconds.
-spawn_ttl_secs = 180
+
+
+debug_spawn = false
+
+; Show summoned allies with their health and time left.
+show_allies = true
+ally_x = 24
+ally_y = 300
 
 ; How far from the player it appears, meters.
 spawn_radius_m = 5
@@ -1374,8 +1391,9 @@ spawn_radius_m = 5
 ; Put it in front of the camera instead of anywhere around the player.
 spawn_in_front = true
 
-; Do not spawn while a boss health bar is on screen.
-spawn_block_in_boss = true
+; Allow spawning while a boss health bar is on screen.
+spawn_in_boss = false
+ally_spawn_in_boss = true
 
 ; How far the boss list looks for nearby bosses, meters.
 boss_list_radius = 500
@@ -1479,10 +1497,10 @@ mod tests {
         assert_eq!(c.web_label_size, d.web_label_size);
         assert_eq!(c.web_counter_size, d.web_counter_size);
         assert_eq!(c.spawn_limit, d.spawn_limit);
-        assert_eq!(c.spawn_ttl_secs, d.spawn_ttl_secs);
+        assert_eq!(c.spawn_limit, d.spawn_limit);
         assert_eq!(c.spawn_radius_m, d.spawn_radius_m);
         assert_eq!(c.spawn_in_front, d.spawn_in_front);
-        assert_eq!(c.spawn_block_in_boss, d.spawn_block_in_boss);
+        assert_eq!(c.spawn_in_boss, d.spawn_in_boss);
         assert_eq!(c.settings_key, d.settings_key);
         assert_eq!(c.boss_list_key, d.boss_list_key);
         assert_eq!(c.boss_list_radius, d.boss_list_radius);

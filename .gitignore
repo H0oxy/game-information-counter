@@ -13,6 +13,6 @@ game_information_counter.bosses
 game_information_counter.spawncrash
 imgui.ini
 
-CLAUDE.md
+# Notes and docs stay local.
+*.md
 .claude/
-docs/av-false-positive.md

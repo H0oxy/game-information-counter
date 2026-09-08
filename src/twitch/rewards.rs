@@ -14,6 +14,19 @@ use crate::config::{dll_sibling, parse_key};
 
 const REWARDS_FILE: &str = "game_information_counter.rewards";
 
+/// Сколько живёт призванный, если у награды срок не выставлен. Столько же
+/// стояло в `spawn_ttl_secs`, пока настройка была общей.
+pub const DEFAULT_SPAWN_TTL_SECS: u16 = 180;
+
+/// То же для союзника. Втрое короче: союзник приходит помочь в драке, а не
+/// населять мир, и три минуты помощи - это уже не помощь (запрос 2026-09-09).
+pub const DEFAULT_ALLY_TTL_SECS: u16 = 60;
+
+/// Срок по умолчанию для того, кого призывают.
+pub const fn default_ttl_secs(ally: bool) -> u16 {
+    if ally { DEFAULT_ALLY_TTL_SECS } else { DEFAULT_SPAWN_TTL_SECS }
+}
+
 /// Что делать, когда награду погасили.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Action {
@@ -36,7 +49,7 @@ pub enum Action {
     /// Времени жизни здесь НЕТ: оно одно на все спавны и живёт в `.ini`
     /// (`spawn_ttl_secs`). Своё поле у награды дублировало ту же настройку и
     /// вдобавок не работало (жалоба 2026-09-03).
-    SpawnEnemy { key: &'static str, delay_secs: u16, cooldown_secs: u16 },
+    SpawnEnemy { key: &'static str, delay_secs: u16, cooldown_secs: u16, ally: bool, ttl_secs: u16 },
     /// Применить эффект из `crate::effects::EFFECT_TABLE` к игроку или к его
     /// цели. `&'static str` по той же причине, что у спавна - `Action`
     /// остаётся `Copy`.
@@ -94,14 +107,43 @@ impl Action {
     }
 
     /// Пятое поле строки в файле. У удержания это миллисекунды нажатия, у
-    /// эффекта - его срок. У спавна с 2026-09-03 не значит ничего: своё время
-    /// жизни у награды убрано, осталось общее из `.ini`.
+    /// эффекта - его срок, у спавна - сколько врагу жить.
+    ///
+    /// У спавна оно уже значило ровно это до 2026-09-03, когда своё время
+    /// жизни у награды убрали как дубликат общей настройки. Вернулось
+    /// 2026-09-07 - но теперь это ЕДИНСТВЕННОЕ место, где срок задаётся, и
+    /// дублировать больше нечего. Старые строки от этого чинятся сами.
     fn duration_ms(&self) -> u32 {
         match self {
             Action::Hold { duration_ms, .. } => *duration_ms,
             Action::Effect { secs, .. } => u32::from(*secs) * 1000,
-            Action::SpawnEnemy { .. } | Action::Press { .. } => 0,
+            Action::SpawnEnemy { ttl_secs, .. } => u32::from(*ttl_secs) * 1000,
+            Action::Press { .. } => 0,
         }
+    }
+
+    /// Сколько жить призванному, секунды. Ноль в файле - строка прошлой версии
+    /// (или срок не выставляли вовсе), тогда берём умолчание.
+    pub fn spawn_ttl_secs(&self) -> u16 {
+        match self {
+            Action::SpawnEnemy { ttl_secs: 0, ally, .. } => default_ttl_secs(*ally),
+            Action::SpawnEnemy { ttl_secs, .. } => *ttl_secs,
+            _ => DEFAULT_SPAWN_TTL_SECS,
+        }
+    }
+
+    /// Нужна ли этой покупке настоящая клавиатура.
+    ///
+    /// Только нажатию и удержанию: `SendInput` бьёт по активному окну всей
+    /// системы, и его перехватывает наше же окно настроек. Спавн и эффект
+    /// пишут игровую память напрямую, им ни то, ни другое не мешает.
+    pub fn needs_keyboard(&self) -> bool {
+        matches!(self, Action::Press { .. } | Action::Hold { .. })
+    }
+
+    /// Призвать существо на своей стороне (команда «дух-призыв»), а не врагом.
+    pub fn spawns_ally(&self) -> bool {
+        matches!(self, Action::SpawnEnemy { ally: true, .. })
     }
 
     pub fn spawn_delay(&self) -> u16 {
@@ -372,7 +414,7 @@ fn encode(e: &RewardEntry) -> String {
         _ => key_name(e.action.key()),
     };
     format!(
-        "reward = {}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "reward = {}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         e.id,
         i32::from(e.enabled),
         e.action.kind(),
@@ -396,6 +438,10 @@ fn encode(e: &RewardEntry) -> String {
         // строки без него читаются как «без перезарядки», то есть как было
         // до этого поля вовсе.
         e.action.cooldown_secs(),
+        // Тринадцатое поле: спавн на стороне игрока. Хвостовое, как задержка и
+        // перезарядка - строки без него читаются как «врагом», то есть как
+        // было до этого поля вовсе.
+        i32::from(e.action.spawns_ally()),
     )
 }
 
@@ -422,6 +468,8 @@ fn decode(value: &str) -> Option<RewardEntry> {
             // (время жизни) у старых строк просто игнорируется.
             delay_secs: p.get(9).and_then(|v| v.trim().parse().ok()).unwrap_or(0),
             cooldown_secs: p.get(11).and_then(|v| v.trim().parse().ok()).unwrap_or(0),
+            ally: p.get(12).is_some_and(|v| v.trim() == "1"),
+            ttl_secs: (duration_ms / 1000).try_into().unwrap_or(0),
         },
         // Битый ключ эффекта - строка не грузится, как и с неизвестной
         // клавишей или врагом выше.
@@ -673,16 +721,37 @@ mod tests {
     /// Спавн - третий тип действия, и у него другое поле "клавиша" (ключ
     /// куратор-списка, не реальная клавиша). Обязан пережить round-trip так
     /// же, как press/hold.
+    /// Клавиатура нужна только нажатию и удержанию. Спавн и эффект пишут
+    /// игровую память, поэтому идут и при открытом окне настроек, и когда игра
+    /// не активное окно (запрос 2026-09-08).
+    #[test]
+    fn only_key_actions_need_the_keyboard() {
+        let key = crate::spawn::SPAWN_TABLE[0].key;
+        assert!(Action::Press { key: Key::Space }.needs_keyboard());
+        assert!(Action::Hold { key: Key::W, duration_ms: 500 }.needs_keyboard());
+        assert!(
+            !Action::SpawnEnemy { key, delay_secs: 0, cooldown_secs: 0, ally: false, ttl_secs: 0 }
+                .needs_keyboard()
+        );
+        assert!(!Action::Effect {
+            key: crate::effects::EFFECT_TABLE[0].key,
+            secs: 10,
+            in_boss: true,
+            cooldown_secs: 0
+        }
+        .needs_keyboard());
+    }
+
     #[test]
     fn spawn_action_round_trips() {
         let key = crate::spawn::SPAWN_TABLE[0].key;
-        let s = RewardEntry { action: Action::SpawnEnemy { key, delay_secs: 0, cooldown_secs: 0 }, ..hold() };
+        let s = RewardEntry { action: Action::SpawnEnemy { key, delay_secs: 0, cooldown_secs: 0, ally: false, ttl_secs: 0 }, ..hold() };
         assert_eq!(round_trip(&s), s);
 
         // Задержка и перезарядка тоже обязаны пережить круг: обе едут в
         // хвостовых полях строки.
         let timed = RewardEntry {
-            action: Action::SpawnEnemy { key, delay_secs: 10, cooldown_secs: 45 },
+            action: Action::SpawnEnemy { key, delay_secs: 10, cooldown_secs: 45, ally: true, ttl_secs: 90 },
             ..hold()
         };
         assert_eq!(round_trip(&timed), timed);
@@ -739,6 +808,22 @@ mod tests {
         assert_eq!(e.action, Action::Press { key: Key::Space });
         assert_eq!(e.cost, 50);
         assert!(e.reward_title.is_empty());
+    }
+
+    /// Строка спавна, написанная до появления тринадцатого поля, обязана
+    /// читаться ВРАГОМ. Ноль в нём - это «как было раньше», и молчаливое
+    /// превращение чужих наград в союзников было бы худшим из исходов.
+    #[test]
+    fn a_spawn_line_without_the_ally_field_stays_hostile() {
+        let key = crate::spawn::SPAWN_TABLE[0].key;
+        // Пятое поле - 90: у строк той версии там лежало время жизни, и
+        // теперь оно снова значит ровно это.
+        let line = format!("8|1|spawn|{key}|90000|100||||3|0|60");
+        let e = decode(&line).expect("строка прошлой версии грузится");
+        assert_eq!(
+            e.action,
+            Action::SpawnEnemy { key, delay_secs: 3, cooldown_secs: 60, ally: false, ttl_secs: 90 }
+        );
     }
 
     #[test]
